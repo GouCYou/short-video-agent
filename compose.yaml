@@ -1,0 +1,101 @@
+name: short-video-agent
+services:
+  mysql:
+    image: mysql:8.0.46
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Run scripts/setup-env.sh first}
+      MYSQL_DATABASE: ${DB_NAME:-short_video_agent}
+      MYSQL_USER: ${DB_USERNAME:-short_video}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Run scripts/setup-env.sh first}
+      TZ: Asia/Shanghai
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci"]
+    volumes: [mysql-data:/var/lib/mysql]
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}" mysql -h 127.0.0.1 -u root -e "SELECT 1" >/dev/null 2>&1']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Run scripts/setup-env.sh first}
+    command: [sh, -c, 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli ping | grep -q PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  qdrant:
+    image: qdrant/qdrant:v1.15.5
+    restart: unless-stopped
+    volumes: [qdrant-data:/qdrant/storage]
+    environment:
+      QDRANT__TELEMETRY_DISABLED: 'true'
+  ai:
+    build: ./short-video-agent-ai
+    restart: unless-stopped
+    environment:
+      AI_MODE: ${AI_MODE:-real}
+      BACKEND_INTERNAL_URL: http://backend:8080
+      AI_INTERNAL_KEY: ${AI_INTERNAL_KEY:?Run scripts/setup-env.sh first}
+      GENERATION_BASE_URL: ${GENERATION_BASE_URL:-}
+      GENERATION_API_KEY: ${GENERATION_API_KEY:-}
+      GENERATION_MODEL: ${GENERATION_MODEL:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-short_video_knowledge}
+      KNOWLEDGE_DIR: /data/knowledge
+      AI_HTTP_TIMEOUT_SECONDS: ${AI_HTTP_TIMEOUT_SECONDS:-120}
+      AI_HTTP_RETRIES: ${AI_HTTP_RETRIES:-2}
+      RETRIEVAL_MIN_SCORE: ${RETRIEVAL_MIN_SCORE:-0.2}
+    volumes: [knowledge-data:/data/knowledge:ro]
+    depends_on:
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+  backend:
+    build: ./short-video-agent-backend
+    restart: unless-stopped
+    environment:
+      DB_URL: jdbc:mysql://mysql:3306/${DB_NAME:-short_video_agent}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC&forceConnectionTimeZoneToSession=true&allowPublicKeyRetrieval=true&useSSL=false
+      DB_USERNAME: ${DB_USERNAME:-short_video}
+      DB_PASSWORD: ${DB_PASSWORD:?Run scripts/setup-env.sh first}
+      REGISTRATION_MAX_ATTEMPTS: ${REGISTRATION_MAX_ATTEMPTS:-10}
+      REGISTRATION_WINDOW_SECONDS: ${REGISTRATION_WINDOW_SECONDS:-3600}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Run scripts/setup-env.sh first}
+      AI_BASE_URL: http://ai:8000
+      AI_INTERNAL_KEY: ${AI_INTERNAL_KEY:?Run scripts/setup-env.sh first}
+      KNOWLEDGE_DIR: /data/knowledge
+      SEED_ADMIN_USERNAME: ${SEED_ADMIN_USERNAME:-admin}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?Run scripts/setup-env.sh first}
+    volumes: [knowledge-data:/data/knowledge]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ai:
+        condition: service_healthy
+  frontend:
+    build: ./short-video-agent-frontend
+    restart: unless-stopped
+    ports: ["127.0.0.1:${WEB_PORT:-8088}:80"]
+    depends_on:
+      backend:
+        condition: service_started
+volumes:
+  mysql-data:
+  redis-data:
+  qdrant-data:
+  knowledge-data:

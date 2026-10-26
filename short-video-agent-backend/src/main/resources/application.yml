@@ -1,0 +1,47 @@
+server:
+  port: ${SERVER_PORT:8080}
+  forward-headers-strategy: native
+  tomcat:
+    remoteip:
+      remote-ip-header: X-Forwarded-For
+      protocol-header: X-Forwarded-Proto
+      internal-proxies: '10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|0:0:0:0:0:0:0:1|::1' 
+  error:
+    include-message: never
+spring:
+  application:
+    name: short-video-agent-backend
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/short_video_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&forceConnectionTimeZoneToSession=true}
+    username: ${DB_USERNAME:shortvideo}
+    password: ${DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 10000
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 3s
+      connect-timeout: 3s
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 101MB
+  jackson:
+    time-zone: UTC
+app:
+  ai-base-url: ${AI_BASE_URL:http://localhost:8000}
+  internal-key: ${AI_INTERNAL_KEY:}
+  knowledge-dir: ${KNOWLEDGE_DIR:./data/knowledge}
+  admin-username: ${SEED_ADMIN_USERNAME:}
+  admin-password: ${SEED_ADMIN_PASSWORD:}
+  workers: ${AI_WORKERS:2}
+  session-days: 7
+  registration-max-attempts: ${REGISTRATION_MAX_ATTEMPTS:10}
+  registration-window-seconds: ${REGISTRATION_WINDOW_SECONDS:3600}
+  worker-enabled: ${WORKER_ENABLED:true}
+logging:
+  level:
+    root: INFO

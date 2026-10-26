@@ -1,0 +1,26 @@
+{
+  "mode": "real",
+  "conversationIds": [
+    "798d6c52-ca24-4100-b7cd-c8ebe92df4ba",
+    "f3c557f5-3bc9-4401-98ea-63de18c5604e"
+  ],
+  "checks": {
+    "wordReadThroughConversation": true,
+    "productionSavedToWorks": true,
+    "fourShotPackage": true,
+    "historyReadWithoutMutation": true,
+    "profileReadWithoutInventedSpecs": true,
+    "retryPreservesUserMessage": true,
+    "generatedTitle": true,
+    "processingTimeSaved": true,
+    "memorySaved": true,
+    "greetingWithoutCardsOrTools": true,
+    "replySummarySaved": true
+  },
+  "historyTools": [
+    "read_user_profile",
+    "search_history_creations",
+    "read_history_creation"
+  ],
+  "greetingConversationId": "e4ec7743-d839-4002-a2f2-57b14397ff50"
+}

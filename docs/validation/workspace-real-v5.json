@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-26",
+  "mode": "real",
+  "model": "qiniu/conatus-free",
+  "embeddingConfigured": false,
+  "ids": {
+    "textConversation": "b2f054d5-aca9-49dd-8344-ca7999604070",
+    "wordConversation": "43e80a64-a6c9-4f19-878b-aa70d3643dd9",
+    "finalConversation": "0a9bac0c-db52-43fb-a8fb-fe8d1ecfe751"
+  },
+  "checks": [
+    "real-agent-text-ingestion",
+    "real-agent-word-ingestion",
+    "batch-partial-success-and-dedup",
+    "portable-package-roundtrip-idempotent",
+    "real-chunk-preview-without-embedding",
+    "internal-callback-authentication",
+    "human-readable-pending-index-receipt",
+    "browser-batch-multifile-and-partial-failure",
+    "browser-chunk-preview-no-form-submit",
+    "browser-knowledge-document-link",
+    "browser-independent-panels-desktop-and-narrow",
+    "current-year-timestamp-without-year",
+    "latest-runtime-dedup-enabled-and-readable-error"
+  ]
+}

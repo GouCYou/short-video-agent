@@ -1,0 +1,6 @@
+[
+  {"topic":"大学生如何识别刷单诈骗","audience":"大学生","platform":"抖音","style":"轻松科普","duration":60,"requirements":"不编造统计数据，提供可执行建议。","category":"科普","ragEnabled":true,"mode":"QUICK"},
+  {"topic":"宿舍整理的三个实用思路","audience":"住校学生","platform":"小红书","style":"实用亲切","duration":45,"requirements":"不推销产品，适合低预算。","category":"生活","ragEnabled":true,"mode":"QUICK"},
+  {"topic":"第一次做短视频如何组织脚本","audience":"初学创作者","platform":"哔哩哔哩","style":"清晰有条理","duration":90,"requirements":"结合开头、正文、结尾说明。","category":"创作方法","ragEnabled":true,"mode":"QUICK"}
+]
+

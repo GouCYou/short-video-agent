@@ -1,0 +1,32 @@
+[
+  {
+    "format": ".docx",
+    "characters": 127,
+    "parsed": true,
+    "seconds": 0.0
+  },
+  {
+    "format": ".doc",
+    "characters": 127,
+    "parsed": true,
+    "seconds": 0.5
+  },
+  {
+    "format": ".pdf",
+    "characters": 51,
+    "parsed": true,
+    "seconds": 0.0
+  },
+  {
+    "format": ".pptx",
+    "characters": 59,
+    "parsed": true,
+    "seconds": 0.0
+  },
+  {
+    "format": ".ppt",
+    "characters": 59,
+    "parsed": true,
+    "seconds": 0.5
+  }
+]

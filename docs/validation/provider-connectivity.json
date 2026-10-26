@@ -1,0 +1,6 @@
+{
+  "model": "nvidia/nemotron-3-ultra-550b-a55b-free",
+  "baseUrl": "https://api.naigc.com/v1",
+  "toolsError": "ConnectError",
+  "streamError": "ConnectError"
+}

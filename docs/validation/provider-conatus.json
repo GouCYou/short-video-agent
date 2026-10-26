@@ -1,0 +1,22 @@
+{
+  "model": "qiniu/conatus-free",
+  "baseUrl": "https://api.qnaigc.com/v1",
+  "toolsHttpStatus": 200,
+  "nativeTools": true,
+  "toolCalls": [
+    {
+      "name": "pick_direction",
+      "arguments": "{\"direction\": \"科普\"}"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 279,
+    "completion_tokens": 38,
+    "total_tokens": 317,
+    "prompt_tokens_details": {},
+    "completion_tokens_details": {}
+  },
+  "streamHttpStatus": 200,
+  "streamText": "OK",
+  "reasoningFieldSeen": true
+}

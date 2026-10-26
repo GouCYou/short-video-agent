@@ -1,0 +1,25 @@
+{
+  "conversationId": "7bf5aa89-5c19-4d6f-b678-607fd866ce52",
+  "checks": [
+    {
+      "extension": ".pdf",
+      "parsed": true,
+      "characters": 51
+    },
+    {
+      "extension": ".pptx",
+      "parsed": true,
+      "characters": 59
+    },
+    {
+      "extension": ".ppt",
+      "parsed": true,
+      "characters": 59
+    },
+    {
+      "extension": ".doc",
+      "parsed": true,
+      "characters": 127
+    }
+  ]
+}

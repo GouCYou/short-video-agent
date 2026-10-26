@@ -1,0 +1,21 @@
+{
+  "conversationId": "9d6b6028-1aa0-42c0-85e5-e856aaa05438",
+  "messageId": "f424fb10-6846-448d-8dfa-37ddcb0e5fe8",
+  "checks": [
+    "admin-login",
+    "private-library",
+    "greeting",
+    "retry-replacement",
+    "default-edit-preview-restore-browser",
+    "plus-center-offset-zero",
+    "empty-works-no-overflow",
+    "profile-width-1360",
+    "dedicated-admin-shell",
+    "admin-return-to-user",
+    "private-docx-upload-without-embedding",
+    "restore-preserves-user-upload"
+  ],
+  "mode": "real",
+  "model": "qiniu/conatus-free",
+  "embeddingConfigured": false
+}
