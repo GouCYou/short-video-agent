@@ -3,8 +3,9 @@ import asyncio
 import json
 import re
 import httpx
-from .errors import ServiceError
+from .errors import ServiceError, model_http_error, retry_delay
 from .providers import Provider
+from .identity import IdentityOutputFilter
 
 
 class ToolsUnsupported(Exception):
@@ -83,13 +84,14 @@ class ConversationProvider:
                         if tools and explicit_tools_unsupported(response.status_code, raw):
                             raise ToolsUnsupported()
                         if response.status_code in {429, 502, 503, 504} and attempt < cfg.retries:
-                            await asyncio.sleep(min(2 ** attempt, 4))
+                            await asyncio.sleep(retry_delay(attempt, response))
                             continue
-                        raise ServiceError(f"生成服务返回 HTTP {response.status_code}，请检查模型、密钥、额度与工具调用支持。", 502, "MODEL_HTTP_ERROR")
+                        raise model_http_error(response.status_code, raw, attempt)
                     answer = ""
                     calls = {}
                     usage = {"inputTokens": 0, "outputTokens": 0, "model": cfg.generation_model}
                     filter = AnswerFilter()
+                    identity = IdentityOutputFilter()
                     finished = False
                     if "text/event-stream" in response.headers.get("content-type", ""):
                         async for line in response.aiter_lines():
@@ -123,7 +125,7 @@ class ConversationProvider:
                             # Deliberately ignore reasoning/reasoning_content and every non-content field.
                             piece = delta.get("content")
                             if isinstance(piece, str):
-                                safe = filter.feed(piece)
+                                safe = identity.feed(filter.feed(piece))
                                 if safe:
                                     started = True
                                     answer += safe
@@ -149,7 +151,7 @@ class ConversationProvider:
                             result = json.loads(packet)
                             choice = result["choices"][0]
                             message = choice["message"]
-                            answer = filter.feed(message.get("content") or "", final=True)
+                            answer = identity.feed(filter.feed(message.get("content") or "", final=True), final=True)
                             calls = {i: value for i, value in enumerate(message.get("tool_calls") or [])}
                             tokens = result.get("usage") or {}
                             usage.update(inputTokens=max(0, int(tokens.get("prompt_tokens", 0))), outputTokens=max(0, int(tokens.get("completion_tokens", 0))))
@@ -159,7 +161,7 @@ class ConversationProvider:
                         if answer:
                             started = True
                             yield {"kind": "delta", "text": answer}
-                    tail = filter.feed("", final=True)
+                    tail = identity.feed(filter.feed("", final=True), final=True)
                     if tail:
                         answer += tail
                         started = True
@@ -179,4 +181,4 @@ class ConversationProvider:
                 # Retrying after emitted text would duplicate output and side effects.
                 if started or attempt == cfg.retries:
                     raise ServiceError("生成服务连接失败或超时，请检查网络后重试。", 503, "MODEL_UNAVAILABLE") from exc
-                await asyncio.sleep(min(2 ** attempt, 4))
+                await asyncio.sleep(retry_delay(attempt))

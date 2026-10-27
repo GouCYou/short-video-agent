@@ -58,12 +58,13 @@ export const api = {
         password,
       }),
     ),
-  register: (username: string, password: string, nickname: string) =>
+  register: (username: string, password: string, nickname: string, email: string) =>
     data(
       http.post<{ token: string; user: User }>("/auth/register", {
         username,
         password,
         nickname,
+        email,
       }),
     ),
   me: () => data(http.get<User>("/auth/me")),

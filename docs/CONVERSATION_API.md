@@ -8,7 +8,7 @@ Conversation `{id,title,status:'IDLE'|'RUNNING'|'WAITING_INPUT'|'FAILED',brief:B
 Brief `{topic:string,direction:string,audience:string,platform:string,duration:number,style:string,productionMode:string,equipment:string,requirements:string}`. Unknown strings empty, defaults platform抖音/duration60/style自然亲切. No forced initial forms. Explicit user values override inferred defaults.
 Message `{id,role:'user'|'assistant',content:string,choices:ChoiceGroup[],runId:string|null,createdAt}`
 ChoiceGroup `{id,kind:'TOPIC'|'DIRECTION'|'AUDIENCE'|'STYLE'|'PRODUCTION',title:string,options:ChoiceOption[],selectedOptionId:string|null,customValue:string|null,status:'OPEN'|'SELECTED'|'SUPERSEDED'}`
-ChoiceOption `{id,label:'A'|'B'|'C',title,description,value:string}`. Exactly3options. D is a frontend 自定义 action, opens composer/group-specific entry; submit custom text creates selection, never sends empty option. Backend only accepts choices from persisted current message/group. Old same-kind open groups superseded when new groups appear. Selected group is immutable; user can change requirements via chat, Agent can offer new group. A/B/C selections reflect canonical choice immediately.
+ChoiceOption `{id,label:'A'|'B'|'C'|'D'|'E',title,description,value:string}`. Each group has 2-5 actual options with contiguous labels starting at A. There is no synthetic custom option. Clicking stages the option value in the composer; only explicit send submits the selection and any added user notes. Backend only accepts choices from persisted current message/group. Old same-kind open groups superseded when new groups appear. Selected group is immutable; user can change requirements via chat, Agent can offer new group. Canonical selection is persisted only after the user submits the composer.
 RunEvent `{id:number,runId,type:'run.started'|'message.delta'|'brief.updated'|'tool.started'|'tool.completed'|'tool.failed'|'artifact.updated'|'run.waiting_input'|'run.completed'|'run.failed'|'run.cancelled',toolCallId?:string,tool?:string,data:object,createdAt}`
 Artifact `{id,title,content:ProductionPackage,versionNumber:number,status:'DRAFT'|'FINAL',sources:Source[],createdAt,updatedAt}`
 ArtifactVersion `{id,versionNumber,kind:'GENERATED'|'REVISED'|'MANUAL'|'RESTORED'|'FINALIZED',instruction,content:ProductionPackage,sources:Source[],createdAt}`
@@ -50,7 +50,7 @@ Tool registry min: update_brief, propose_options(kind3options), search_knowledge
 
 ## UX
 
-Homepageconversation workspace fourcolumnsrail72/history240/chatflex/right340, sage/coral/offwhite existing palette. Composer noform. Threechoicecards + Dcustom for TOPIC/DIRECTION/AUDIENCE/etc. Historycollapsible, executionrailcollapsible, mobile drawers/tabs. Righttabs执行/作品/资料. Productionpackage readable sections/timeline, inlineediting/versiondiff/export. Conversation remains primaryhome and works/nav/admincontinue. DefaultElAvatarUserFilled, noinitials. Visiblebody16/metamin14, noEnglishdecorativeeyebrows orfootersmallcopy. No conversationinstructionscopiedintoproduct.
+Homepageconversation workspace fourcolumnsrail72/history240/chatflex/right340, sage/coral/offwhite existing palette. Composer noform. Threechoicecards + Dcustom for TOPIC/DIRECTION/AUDIENCE/etc. Historycollapsible, executionrailcollapsible, mobile drawers/tabs. Right workspace uses one continuous feed for tool executions, original news links and the artifact entry, without status row or tabs. Productionpackage readable sections/timeline, inlineediting/versiondiff/export. Conversation remains primaryhome and works/nav/admincontinue. DefaultElAvatarUserFilled, noinitials. Visiblebody16/metamin14, noEnglishdecorativeeyebrows orfootersmallcopy. No conversationinstructionscopiedintoproduct.
 
 
 ## 工作区扩展（V3）
@@ -71,3 +71,18 @@ Homepageconversation workspace fourcolumnsrail72/history240/chatflex/right340, s
 新增实际工具：`read_document`、`read_user_profile`、`search_history_creations`、`read_history_creation`。附件和历史作品由业务服务按用户所属范围封装为本轮快照，客户端不能指定其他用户的历史。详细容量和处理边界见 `WORKSPACE_V3.md`。
 
 `save_knowledge` 保存当前运行所属用户提供的原文或附件全文。使用单独的入库意图判断；只阅读/总结不会授权写入。右侧展示真实资料保存回执，可打开对应资料。内部回调和知识包契约见 API_CONTRACT.md。
+
+
+## News and document canvas (V6)
+
+`Conversation.researchSources: Source[]` returns persisted news snapshots derived from completed owner-scoped news tool events; the internal run request includes the same evidence. Clients cannot inject or select another user's snapshots. No database schema migration is required.
+
+`search_news {query, days:1..90, limit:1..8}` searches bounded public indexes and publisher pages. Output includes `articles`, `sources`, `matchCount`, `notices`, and `factVerified:false`. Each article distinguishes `publishedAt` from `fetchedAt` and `BODY` from `SUMMARY`. `read_news {sourceId}` reads only an already retrieved web source snapshot. Replies report the original publication time; unknown timestamps remain unknown. Source metadata and body snapshots persist for subsequent turns and citation validation; discovery excerpts sent to the model are bounded.
+
+`/works/:id` opens the existing artifact read-only; `?edit=1` explicitly enables the document canvas and Agent sidecar. Inline edits use the existing versioned artifact API, and Agent changes use the original conversation. `/tasks` now shows one row per work; legacy task details remain accessible.
+
+## Personal defaults and cleanup (V7)
+
+`GET/PUT/DELETE /creation-defaults` reads, replaces or restores the authenticated user's full Brief defaults. New conversations inherit them. `PUT /conversations/{id}/brief` updates a full Brief for this idle, owner-scoped conversation only. `DELETE /conversations/{id}/execution-records` returns Conversation with `executionsClearedThrough`; clients hide tool calls whose first event is at or before this cursor while retaining source evidence and artifacts.
+
+Automatic memory entries retain conversation provenance. Conversation deletion and reply retry invalidate derived memory and pending extraction; manually edited and independently sourced entries remain. Migration V6 adds the defaults table and execution visibility cursor.

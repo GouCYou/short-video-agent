@@ -49,9 +49,9 @@ describe("concise workspace presentation", () => {
     const profile = mount(ProfileView, { global });
     const profileAvatar = profile.getComponent(ElAvatar);
     expect(profileAvatar.props("icon")).toBe(UserFilled);
-    expect(profileAvatar.props("size")).toBe(64);
+    expect(profileAvatar.props("size")).toBe(48);
     expect(profileAvatar.text()).toBe("");
-    expect(profile.get(".profile-header h2").text()).toBe("头像测试");
+    expect(profile.get(".settings-user strong").text()).toBe("头像测试");
     profile.unmount();
     vi.mocked(api.users).mockResolvedValue([account]);
     const users = mount(UsersView, { global });

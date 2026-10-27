@@ -72,7 +72,7 @@ describe("account workflows", () => {
     expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
     wrapper.unmount();
   });
-  it("requires a nickname for registration and passes it to backend", async () => {
+  it("requires nickname and a valid email for registration and passes them to backend", async () => {
     const { wrapper } = await setup();
     await wrapper.get(".auth-toggle button").trigger("click");
     await wrapper.get('input[autocomplete="username"]').setValue("newcreator");
@@ -83,6 +83,10 @@ describe("account workflows", () => {
       wrapper.get('button[type="submit"]').attributes("disabled"),
     ).toBeDefined();
     await wrapper.get('input[autocomplete="nickname"]').setValue("新创作者");
+    await wrapper.get('input[autocomplete="email"]').setValue("invalid");
+    await wrapper.get("form").trigger("submit");
+    expect(api.register).not.toHaveBeenCalled();
+    await wrapper.get('input[autocomplete="email"]').setValue(" Creator@Example.com ");
     vi.mocked(api.register).mockResolvedValue({
       token: "register-token",
       user,
@@ -93,11 +97,12 @@ describe("account workflows", () => {
       "newcreator",
       "password123",
       "新创作者",
+      "creator@example.com",
     );
     wrapper.unmount();
   });
   it("clears local session and returns to login after changing password", async () => {
-    const { wrapper, router, pinia } = await setup(ProfileView, "/profile");
+    const { wrapper, router, pinia } = await setup(ProfileView, "/profile?tab=security");
     const auth = useAuth(pinia);
     auth.accept({ token: "old-token", user });
     await wrapper
@@ -134,4 +139,15 @@ it("accepts the configured six-character administrator password during sign-in",
   expect(api.login).toHaveBeenCalledWith("admin", "123456");
   expect(router.currentRoute.value.path).toBe("/");
   wrapper.unmount();
+});
+
+it("keeps personal information and account security in separate navigable panes", async () => {
+ const {wrapper,router}=await setup(ProfileView,"/profile");
+ expect(wrapper.find('input[autocomplete="current-password"]').exists()).toBe(false);
+ expect(wrapper.text()).toContain("创作者昵称");
+ await router.push("/profile?tab=security");await flushPromises();
+ await new Promise(resolve=>setTimeout(resolve,30));await flushPromises();
+ expect(wrapper.find('input[autocomplete="current-password"]').exists()).toBe(true);
+ expect(wrapper.text()).not.toContain("创作者昵称");
+ wrapper.unmount();
 });

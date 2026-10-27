@@ -8,26 +8,25 @@ from typing import TypeVar
 import httpx
 from pydantic import BaseModel, ValidationError
 from .config import Settings
-from .errors import ServiceError
+from .errors import ServiceError, model_http_error, retry_delay
 
 T = TypeVar("T", bound=BaseModel)
 
 
-async def request_json(client: httpx.AsyncClient, method: str, url: str, *, retries: int = 2, **kwargs):
+async def request_json(client: httpx.AsyncClient, method: str, url: str, *, retries: int = 4, **kwargs):
     for attempt in range(retries + 1):
         try:
             response = await client.request(method, url, **kwargs)
             if response.status_code in (429, 502, 503, 504) and attempt < retries:
-                await asyncio.sleep(min(2 ** attempt, 4))
+                await asyncio.sleep(retry_delay(attempt, response))
                 continue
             if response.status_code >= 400:
-                # Upstream responses may contain input text/credentials. Return only status.
-                raise ServiceError(f"上游服务返回 HTTP {response.status_code}，请检查服务地址、密钥、模型与额度。")
+                raise model_http_error(response.status_code, response.text[:20000], attempt)
             return response.json()
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             if attempt == retries:
                 raise ServiceError("上游服务连接失败或超时，请检查网络与服务地址。", 503, "UPSTREAM_UNAVAILABLE") from exc
-            await asyncio.sleep(min(2 ** attempt, 4))
+            await asyncio.sleep(retry_delay(attempt))
         except (ValueError, TypeError) as exc:
             raise ServiceError("上游服务未返回有效 JSON。") from exc
 

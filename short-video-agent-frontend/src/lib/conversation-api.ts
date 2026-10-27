@@ -177,6 +177,8 @@ export const toolLabels: Record<string, string> = {
   update_brief: "整理创作需求",
   propose_options: "提供创作选项",
   search_knowledge: "检索知识资料",
+  search_news: "搜索公开新闻",
+  read_news: "阅读新闻原文",
   create_production: "生成制作方案",
   revise_production: "修改制作方案",
   check_production: "检查制作方案",

@@ -17,6 +17,7 @@ from .providers import Provider
 from .workflow import Workflow
 from .documents import ExtractRequest, extract_document
 from .memory import MemoryRequest, summarize
+from .model_settings import ModelSettings, ModelUpdate
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +28,17 @@ def create_app(settings: Settings | None = None, transport=None):
     @asynccontextmanager
     async def lifespan(app):
         async with httpx.AsyncClient(timeout=cfg.timeout, transport=transport) as client:
-            provider = Provider(cfg, client)
-            app.state.provider = provider
-            app.state.knowledge = Knowledge(cfg, provider, client)
-            app.state.workflow = Workflow(cfg, provider, app.state.knowledge)
-            app.state.conversation = ConversationAgent(cfg, provider, app.state.knowledge)
+            store=ModelSettings(cfg)
+            def build(active):
+                from types import SimpleNamespace
+                provider=Provider(active,client);knowledge=Knowledge(active,provider,client)
+                return SimpleNamespace(cfg=active,provider=provider,knowledge=knowledge,workflow=Workflow(active,provider,knowledge),conversation=ConversationAgent(active,provider,knowledge))
+            def publish(runtime):
+                app.state.runtime=runtime
+                # Compatibility handles for tests and diagnostics; requests capture runtime once.
+                for name in ('provider','knowledge','workflow','conversation'): setattr(app.state,name,getattr(runtime,name))
+            app.state.model_settings=store;app.state.build_runtime=build;app.state.publish_runtime=publish
+            publish(build(store.cfg))
             yield
 
     app = FastAPI(title="Short Video Agent Private AI", version="1.0.0", lifespan=lifespan,
@@ -64,27 +71,44 @@ def create_app(settings: Settings | None = None, transport=None):
 
     @app.get("/internal/health", dependencies=[Depends(authenticate)])
     async def internal_health(request: Request):
+        runtime=request.app.state.runtime
+        active=runtime.cfg
         try:
-            await request.app.state.knowledge.exists()
+            await runtime.knowledge.exists()
             vector = "ok"
         except ServiceError:
             vector = "unavailable"
-        configured = cfg.generation_configured and cfg.embedding_configured and vector == "ok"
-        return {"status": "ok" if configured else "degraded", "generationConfigured": cfg.generation_configured,
-                "embeddingConfigured": cfg.embedding_configured, "vectorStore": vector, "mode": cfg.mode,
-                "statusDetail": "DEMO：离线模板模式，未调用真实模型。" if cfg.mode == "demo" else "real"}
+        configured = active.generation_configured and active.embedding_configured and vector == "ok"
+        return {"status": "ok" if configured else "degraded", "generationConfigured": active.generation_configured,
+                "embeddingConfigured": active.embedding_configured, "vectorStore": vector, "mode": active.mode,
+                "statusDetail": "DEMO：离线模板模式，未调用真实模型。" if active.mode == "demo" else "real"}
+
+    @app.get('/internal/model-settings',dependencies=[Depends(authenticate)])
+    async def get_model_settings(request:Request):
+        return request.app.state.model_settings.view()
+
+    @app.post('/internal/model-settings',dependencies=[Depends(authenticate)])
+    async def save_model_settings(body:ModelUpdate,request:Request):
+        store=request.app.state.model_settings
+        async with store.lock:
+            active=store.prepare(body)
+            runtime=request.app.state.build_runtime(active)
+            store.commit(active)
+            request.app.state.publish_runtime(runtime)
+            return store.view()
 
     @app.post("/internal/generate", dependencies=[Depends(authenticate)])
     async def generate(body: GenerateRequest, request: Request):
         try:
-            return await asyncio.wait_for(request.app.state.workflow.run(body), timeout=300)
+            return await asyncio.wait_for(request.app.state.runtime.workflow.run(body), timeout=300)
         except asyncio.TimeoutError as exc:
             raise ServiceError("生成已超过 300 秒执行上限，请稍后重试或选择响应更快的模型。", 504, "GENERATION_TIMEOUT") from exc
 
     @app.post("/internal/conversation/run", dependencies=[Depends(authenticate)])
     async def conversation(body: ConversationRequest, request: Request):
+        agent=request.app.state.runtime.conversation
         async def lines():
-            async for item in request.app.state.conversation.run(body):
+            async for item in agent.run(body):
                 yield json.dumps(item, ensure_ascii=False, allow_nan=False) + "\n"
         return StreamingResponse(lines(), media_type="application/x-ndjson",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -96,7 +120,7 @@ def create_app(settings: Settings | None = None, transport=None):
     @app.post("/internal/conversation/memory", dependencies=[Depends(authenticate)])
     async def memory(body: MemoryRequest, request: Request):
         try:
-            return await asyncio.wait_for(summarize(request.app.state.provider, body), timeout=90)
+            return await asyncio.wait_for(summarize(request.app.state.runtime.provider, body), timeout=90)
         except asyncio.TimeoutError as exc:
             raise ServiceError("记忆整理超时，将在稍后继续。", 504, "MEMORY_TIMEOUT") from exc
 
@@ -110,21 +134,21 @@ def create_app(settings: Settings | None = None, transport=None):
     @app.post("/internal/knowledge/index", dependencies=[Depends(authenticate)])
     async def index(body: IndexRequest, request: Request):
         try:
-            return await asyncio.wait_for(request.app.state.knowledge.index(body), timeout=300)
+            return await asyncio.wait_for(request.app.state.runtime.knowledge.index(body), timeout=300)
         except asyncio.TimeoutError as exc:
             raise ServiceError("知识索引超过 300 秒，请拆分文件后重试。", 504, "INDEX_TIMEOUT") from exc
 
     @app.post("/internal/knowledge/search", dependencies=[Depends(authenticate)])
     async def search(body: InternalSearchRequest, request: Request):
-        return [source.model_dump() for source in await request.app.state.knowledge.search(body, document_ids=body.documentIds)]
+        return [source.model_dump() for source in await request.app.state.runtime.knowledge.search(body, document_ids=body.documentIds)]
 
     @app.put("/internal/knowledge/{document_id}", dependencies=[Depends(authenticate)])
     async def update(document_id: str, body: MetadataRequest, request: Request):
-        return await request.app.state.knowledge.update(document_id, body)
+        return await request.app.state.runtime.knowledge.update(document_id, body)
 
     @app.delete("/internal/knowledge/{document_id}", dependencies=[Depends(authenticate)])
     async def delete(document_id: str, request: Request):
-        return await request.app.state.knowledge.delete(document_id)
+        return await request.app.state.runtime.knowledge.delete(document_id)
 
     return app
 

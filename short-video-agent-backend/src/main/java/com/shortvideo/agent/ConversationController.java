@@ -60,6 +60,16 @@ class ConversationController {
     conversations.delete(id);
   }
 
+  @PutMapping("/{id}/brief")
+  Map<String,Object> updateBrief(@PathVariable String id, @RequestBody Map<String,Object> body) {
+    return conversations.updateBrief(id,body);
+  }
+
+  @DeleteMapping("/{id}/execution-records")
+  Map<String,Object> clearExecutions(@PathVariable String id) {
+    return conversations.clearExecutions(id);
+  }
+
   @PostMapping("/{id}/messages")
   @ResponseStatus(HttpStatus.ACCEPTED)
   Map<String, Object> submit(

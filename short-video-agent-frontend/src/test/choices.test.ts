@@ -18,19 +18,10 @@ describe("canonical conversation choices", () => {
           props: { group },
           global: { plugins: [ElementPlus] },
         });
-      expect(wrapper.findAll(".choice-option")).toHaveLength(4);
+      expect(wrapper.findAll(".choice-option")).toHaveLength(3);
       await wrapper.findAll(".choice-option")[1]!.trigger("click");
       expect(wrapper.emitted("select")?.[0]).toEqual([
         { groupId: group.id, optionId: `${kind}-b` },
-      ]);
-      await wrapper.get(".custom-option").trigger("click");
-      expect(
-        wrapper.get('button[type="submit"]').attributes("disabled"),
-      ).toBeDefined();
-      await wrapper.get("textarea").setValue("我想面向大三学生");
-      await wrapper.get("form").trigger("submit");
-      expect(wrapper.emitted("select")?.[1]).toEqual([
-        { groupId: group.id, customText: "我想面向大三学生" },
       ]);
       wrapper.unmount();
     });
@@ -70,4 +61,15 @@ describe("canonical conversation choices", () => {
     ).toBe(true);
     wrapper.unmount();
   });
+});
+
+it('renders exactly the supplied count and treats D as a real fourth option',async()=>{
+ const base=choiceGroup();
+ for(const count of [2,4,5]){
+  const group={...base,options:Array.from({length:count},(_,index)=>({id:'option-'+index,label:'ABCDE'[index] as 'A'|'B'|'C'|'D'|'E',title:'选项'+index,description:'说明'.repeat(400),value:'内容'+index}))};
+  const wrapper=mount(ChoiceCards,{props:{group},global:{plugins:[ElementPlus]}});
+  expect(wrapper.findAll('.choice-row')).toHaveLength(count);expect(wrapper.find('.custom-option').exists()).toBe(false);expect(wrapper.findAll('.choice-details-button')).toHaveLength(count);
+  if(count>=4){await wrapper.findAll('.choice-option')[3]!.trigger('click');expect(wrapper.emitted('select')![0]).toEqual([{groupId:group.id,optionId:'option-3'}]);}
+  wrapper.unmount();
+ }
 });

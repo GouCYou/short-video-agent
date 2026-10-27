@@ -76,7 +76,7 @@ class BusinessIntegrationTest {
   String register(String username) {
     var result =
         auth.register(
-            Map.of("username", username, "password", "strong-password-123", "nickname", username),
+            Map.of("email", username + "@example.com", "username", username, "password", "strong-password-123", "nickname", username),
             new MockHttpServletRequest());
     String token = result.get("token").toString();
     use(token);
@@ -431,13 +431,13 @@ class BusinessIntegrationTest {
     verify(values, never()).increment(anyString());
     String rateKey = "sva:rate:" + AuthService.hash("register:198.51.100.10");
     when(redis.getExpire(eq(rateKey), eq(java.util.concurrent.TimeUnit.SECONDS))).thenReturn(42L);
-    limited.register(Map.of("username", "first_user", "password", "valid-password"), firstClient);
-    limited.register(Map.of("username", "second_user", "password", "valid-password"), firstClient);
+    limited.register(Map.of("email", "first_user@example.com", "username", "first_user", "password", "valid-password"), firstClient);
+    limited.register(Map.of("email", "second_user@example.com", "username", "second_user", "password", "valid-password"), firstClient);
     ApiException blocked =
         catchThrowableOfType(
             () ->
                 limited.register(
-                    Map.of("username", "third_user", "password", "valid-password"), firstClient),
+                    Map.of("email", "third_user@example.com", "username", "third_user", "password", "valid-password"), firstClient),
             ApiException.class);
     assertThat(blocked.status).isEqualTo(org.springframework.http.HttpStatus.TOO_MANY_REQUESTS);
     assertThat(blocked.retryAfterSeconds).isEqualTo(42);
@@ -448,7 +448,7 @@ class BusinessIntegrationTest {
         catchThrowableOfType(
             () ->
                 limited.register(
-                    Map.of("username", "third_user", "password", "valid-password"), firstClient),
+                    Map.of("email", "third_user@example.com", "username", "third_user", "password", "valid-password"), firstClient),
             ApiException.class);
     assertThat(later.retryAfterSeconds).isEqualTo(9);
     // A caller-supplied XFF is not interpreted in the auth service.
@@ -456,18 +456,18 @@ class BusinessIntegrationTest {
     assertThatThrownBy(
             () ->
                 limited.register(
-                    Map.of("username", "third_user", "password", "valid-password"), firstClient))
+                    Map.of("email", "third_user@example.com", "username", "third_user", "password", "valid-password"), firstClient))
         .isInstanceOf(ApiException.class)
         .hasMessageContaining("9 秒");
     var secondClient = new MockHttpServletRequest();
     secondClient.setRemoteAddr("198.51.100.11");
     assertThat(
             limited.register(
-                Map.of("username", "third_user", "password", "valid-password"), secondClient))
+                Map.of("email", "third_user@example.com", "username", "third_user", "password", "valid-password"), secondClient))
         .containsKey("token");
     assertThat(
             limited.login(
-                Map.of("username", "first_user", "password", "valid-password"), firstClient))
+                Map.of("email", "first_user@example.com", "username", "first_user", "password", "valid-password"), firstClient))
         .containsKey("token");
   }
 
@@ -513,4 +513,24 @@ class BusinessIntegrationTest {
                     new MockHttpServletRequest()))
         .isInstanceOf(ApiException.class);
   }
+  @Test
+  void registrationRequiresValidUniqueNormalizedEmailAndKeepsLegacyLogin() {
+    var request = new MockHttpServletRequest();
+    var input = new HashMap<String,Object>(Map.of("username","email_user","password","strong-password-123"));
+    assertThatThrownBy(() -> auth.register(input,request)).isInstanceOf(ApiException.class).hasMessageContaining("邮箱");
+    for (String invalid : List.of("invalid","a@b","a..b@example.com","a@-example.com","a b@example.com")) {
+      input.put("email",invalid);
+      assertThatThrownBy(() -> auth.register(input,request)).isInstanceOf(ApiException.class).hasMessageContaining("邮箱");
+    }
+    input.put("email"," Creator@Example.COM ");
+    var session=auth.register(input,request);
+    assertThat(Json.map(session.get("user"))).containsEntry("email","creator@example.com");
+    input.put("username","another_email_user"); input.put("email","CREATOR@EXAMPLE.COM");
+    assertThatThrownBy(() -> auth.register(input,request)).isInstanceOf(ApiException.class).hasMessageContaining("邮箱已被注册");
+    register("legacy_user");
+    db.update("UPDATE users SET email=NULL WHERE username=?","legacy_user");
+    var old=auth.login(Map.of("username","legacy_user","password","strong-password-123"),request);
+    assertThat(Json.map(old.get("user"))).containsEntry("email","");
+  }
+
 }

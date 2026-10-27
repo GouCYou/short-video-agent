@@ -214,6 +214,8 @@ class ConversationWorker {
                         "update_brief",
                         "propose_options",
                         "search_knowledge",
+                        "search_news",
+                        "read_news",
                         "create_production",
                         "revise_production",
                         "check_production",

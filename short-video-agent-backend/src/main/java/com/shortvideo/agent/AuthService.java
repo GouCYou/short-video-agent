@@ -22,6 +22,7 @@ class AuthService implements ApplicationRunner {
   record Account(
       String id,
       String username,
+      String email,
       String nickname,
       String role,
       boolean enabled,
@@ -34,6 +35,8 @@ class AuthService implements ApplicationRunner {
           id,
           "username",
           username,
+          "email",
+          email == null ? "" : email,
           "nickname",
           nickname,
           "role",
@@ -88,6 +91,7 @@ class AuthService implements ApplicationRunner {
                 new Account(
                     rs.getString("id"),
                     rs.getString("username"),
+                    rs.getString("email"),
                     rs.getString("nickname"),
                     rs.getString("role"),
                     rs.getBoolean("enabled"),
@@ -123,6 +127,10 @@ class AuthService implements ApplicationRunner {
   Map<String, Object> register(Map<String, Object> body, HttpServletRequest request) {
     String username = Json.required(body, "username", 40).toLowerCase(Locale.ROOT);
     if (!username.matches("[a-z0-9_]{3,40}")) throw ApiException.bad("用户名须为 3 到 40 位字母、数字或下划线");
+    String email = Json.str(body, "email", "").strip().toLowerCase(Locale.ROOT);
+    if (email.isEmpty()) throw ApiException.bad("请输入邮箱");
+    if (email.length() > 254 || !email.matches("[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+") || email.indexOf('@')>64)
+      throw ApiException.bad("请输入有效的邮箱地址");
     String password = Json.str(body, "password", "");
     validatePassword(password);
     String nickname = Json.optional(body, "nickname", username, 80);
@@ -134,14 +142,15 @@ class AuthService implements ApplicationRunner {
     String id = Json.id();
     try {
       db.update(
-          "INSERT INTO users(id,username,password_hash,nickname,role,enabled)"
-              + " VALUES(?,?,?,?,'USER',TRUE)",
+          "INSERT INTO users(id,username,email,password_hash,nickname,role,enabled)"
+              + " VALUES(?,?,?,?,?,'USER',TRUE)",
           id,
           username,
+          email,
           passwords.encode(password),
           nickname.isBlank() ? username : nickname);
     } catch (DuplicateKeyException ex) {
-      throw ApiException.conflict("用户名已存在");
+      throw ApiException.conflict(byUsername(username) != null ? "用户名已存在" : "邮箱已被注册");
     }
     return issue(find(id));
   }

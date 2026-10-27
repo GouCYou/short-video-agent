@@ -2,6 +2,7 @@ import { defineComponent } from "vue";
 import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
 import { useConversation } from "../composables/useConversation";
+import { useWorkspace } from "../composables/useWorkspace";
 import { conversationApi, streamConversation } from "../lib/conversation-api";
 import type { Conversation, RunEvent } from "../lib/conversation-types";
 import { conversation, event } from "./conversation-fixtures";
@@ -185,6 +186,30 @@ describe("conversation state consistency", () => {
     });
     await pending;
     expect(state.conversation.value?.id).toBe("chat-two");
+  });
+  it("keeps a server run in history after leaving and resumes persisted output on reopen", async () => {
+    const workspace = useWorkspace();
+    workspace.history.value = [];
+    const active = conversation({ status: "RUNNING", activeRunId: "run-one" });
+    vi.mocked(conversationApi.get).mockResolvedValue(active);
+    setup();
+    await state.load("chat-one");
+    expect(workspace.history.value[0]?.status).toBe("RUNNING");
+    const signal = vi.mocked(streamConversation).mock.calls.at(-1)![2];
+    wrapper!.unmount(); wrapper = undefined;
+    expect(signal.aborted).toBe(true);
+    expect(conversationApi.cancel).not.toHaveBeenCalled();
+    expect(workspace.history.value[0]?.activeRunId).toBe("run-one");
+    setup();
+    vi.mocked(conversationApi.get).mockResolvedValue(conversation({
+      ...active,
+      events: [event(1, "message.delta", "离开后生成的内容")],
+    }));
+    await state.load("chat-one");
+    expect(state.delta.value).toBe("离开后生成的内容");
+    state.accept(conversation());
+    expect(workspace.history.value[0]?.status).toBe("WAITING_INPUT");
+    expect(workspace.history.value[0]?.activeRunId).toBeNull();
   });
 });
 

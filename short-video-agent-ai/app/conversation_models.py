@@ -113,7 +113,7 @@ class OpeningRevision(Schema):
 
 
 class ChoiceCandidate(Schema):
-    label: Literal["A", "B", "C"]
+    label: Literal["A", "B", "C", "D", "E"]
     title: str = Field(min_length=1, max_length=300)
     description: str = Field(min_length=1, max_length=2000)
     value: str = Field(min_length=1, max_length=2000)
@@ -122,14 +122,14 @@ class ChoiceCandidate(Schema):
 class ProposeOptions(Schema):
     kind: ChoiceKind
     title: str = Field(min_length=1, max_length=300)
-    options: list[ChoiceCandidate] = Field(min_length=3, max_length=3)
+    options: list[ChoiceCandidate] = Field(min_length=2, max_length=5)
 
     @model_validator(mode="after")
     def labels(self):
-        if [option.label for option in self.options] != ["A", "B", "C"]:
-            raise ValueError("options must be ordered A, B, C")
-        if len({option.value for option in self.options}) != 3:
-            raise ValueError("options must have three distinct values")
+        if [option.label for option in self.options] != list("ABCDE")[:len(self.options)]:
+            raise ValueError("options must be ordered from A through E")
+        if len({option.value for option in self.options}) != len(self.options):
+            raise ValueError("options must have distinct values")
         return self
 
 
@@ -144,6 +144,7 @@ class Selection(Schema):
 
 
 class ConversationRequest(Schema):
+    researchSources: list[Source] = Field(default_factory=list, max_length=100)
     knowledgeDocumentIds: list[str] | None = Field(default=None, max_length=10000)
     conversationId: str = Field(min_length=1, max_length=100)
     runId: str = Field(min_length=1, max_length=100)
@@ -200,5 +201,5 @@ class CheckProduction(Schema):
 
 
 class DynamicAction(Schema):
-    tool: Literal["update_brief", "propose_options", "search_knowledge", "create_production", "revise_production", "check_production", "read_document", "save_knowledge", "search_history_creations", "read_history_creation", "read_user_profile", "respond"]
+    tool: Literal["update_brief", "propose_options", "search_knowledge", "search_news", "read_news", "create_production", "revise_production", "check_production", "read_document", "save_knowledge", "search_history_creations", "read_history_creation", "read_user_profile", "respond"]
     arguments: dict = Field(default_factory=dict)

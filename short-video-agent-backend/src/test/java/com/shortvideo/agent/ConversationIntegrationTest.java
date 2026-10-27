@@ -34,6 +34,7 @@ class ConversationIntegrationTest {
   @Autowired AuthService auth;
   @Autowired ConversationService service;
   @Autowired TransactionTemplate tx;
+  @Autowired CreationSettingsService creationSettings;
   @MockitoBean StringRedisTemplate redis;
 
   @BeforeEach
@@ -61,10 +62,84 @@ class ConversationIntegrationTest {
     RequestContextHolder.resetRequestAttributes();
   }
 
+  @Test
+  void deletingConversationRemovesOnlyItsDerivedMemoriesIncludingLegacyItems() {
+    user("alice");String alice=auth.current().id(); String id=conversation(); String other=conversation();
+    String run=submit(id,"我长期使用手机拍摄");finish(id,run,List.of(),null);
+    db.update("INSERT INTO user_memories(user_id,profile_json) VALUES(?,?)",alice,json.write(List.of(
+        Map.of("text","手机拍摄","evidence","长期使用手机拍摄"),
+        Map.of("text","其他偏好","evidence","其他","conversationIds",List.of(other)),
+        Map.of("text","手动设置","evidence","用户编辑","manual",true),
+        Map.of("text","共享偏好","evidence","共享","conversationIds",List.of(id,other)))));
+    db.update("UPDATE conversations SET summary_text='旧摘要' WHERE id=?",id);
+    service.delete(id);
+    var items=(List<?>)memory.get().get("items");
+    assertThat(items).hasSize(3);
+    assertThat(json.write(items)).doesNotContain("手机拍摄",id).contains(other,"手动设置");
+    assertThat((List<?>)memory.get().get("conversations")).isEmpty();
+  }
+
+  @Test
+  void retryClearsDerivedMemoryBeforeBuildingNewContextAndInvalidatesInflightExtraction() {
+    user("alice");String alice=auth.current().id();String id=conversation();String run=submit(id,"我的长期设备是手机");finish(id,run,List.of(),null);
+    db.update("INSERT INTO user_memories(user_id,profile_json) VALUES(?,?)",alice,json.write(List.of(Map.of("text","手机","evidence","设备是手机","conversationIds",List.of(id)))));
+    db.update("UPDATE conversations SET summary_text='过期摘要' WHERE id=?",id);
+    String reply=service.messages(id).getLast().get("id").toString();
+    var fake=mock(AiClient.class);
+    when(fake.post(eq("/internal/conversation/memory"),any())).thenAnswer(invocation->{
+      service.retry(id,reply,"retry-memory");
+      return Map.of("title","过期标题","summary","过期内容","profile",List.of(Map.of("text","手机","evidence","设备是手机")));
+    });
+    new MemoryService(db,json,auth,fake,tx).refreshOne();
+    assertThat((List<?>)memory.get().get("items")).isEmpty();
+    assertThat(service.raw(id).get("summary")).isEqualTo("");
+    String active=service.raw(id).get("activeRunId").toString();
+    var request=json.object(db.queryForObject("SELECT request_json FROM agent_runs WHERE id=?",String.class,active));
+    assertThat(json.write(request.get("memory"))).doesNotContain("手机","过期摘要");
+  }
+
+  @Test
+  void personalDefaultsAreIsolatedAndConversationOverridesDoNotChangeThem() {
+    user("alice");var defaults=ProductionValidator.defaultBrief();defaults.put("duration",90);defaults.put("equipment","手机");
+    creationSettings.save(defaults);String id=conversation();
+    assertThat(Json.map(service.detail(id).get("brief")).get("duration")).isEqualTo(90);
+    var local=new LinkedHashMap<>(defaults);local.put("duration",30);service.updateBrief(id,local);
+    assertThat(creationSettings.get().get("duration")).isEqualTo(90);
+    creationSettings.reset();assertThat(creationSettings.get().get("duration")).isEqualTo(60);
+    assertThat(Json.map(service.detail(id).get("brief")).get("duration")).isEqualTo(30);
+    user("bob");assertThat(creationSettings.get().get("equipment")).isEqualTo("");
+    assertThatThrownBy(()->service.updateBrief(id,local)).isInstanceOf(ApiException.class);
+    assertThatThrownBy(()->service.clearExecutions(id)).isInstanceOf(ApiException.class);
+  }
+
+  @Test
+  void clearingExecutionVisibilityPreservesEventsAndAllowsNewSteps() {
+    user("alice");String id=conversation();String run=submit(id,"先讨论");running(id,run);
+    service.live(id,run,"test-worker","tool.started",new LinkedHashMap<>(Map.of("tool","search_news","toolCallId","first")));
+    int before=service.events(id,0).size();var cleared=service.clearExecutions(id);
+    long cursor=((Number)cleared.get("executionsClearedThrough")).longValue();
+    assertThat(cursor).isGreaterThan(0);assertThat(service.events(id,0)).hasSize(before);
+    service.live(id,run,"test-worker","tool.started",new LinkedHashMap<>(Map.of("tool","read_news","toolCallId","next")));
+    assertThat(service.events(id,cursor)).hasSize(1);
+  }
+
+  @Test
+  void fourthOptionIsAnActualChoiceAndCountsAreBounded() {
+    user("four_options");String id=conversation(),run=submit(id,"给几个方向");
+    var options=new ArrayList<Map<String,Object>>();
+    for(String label:List.of("A","B","C","D"))options.add(Map.of("label",label,"title","角度"+label,"description","说明"+label,"value","表达"+label));
+    finish(id,run,List.of(Map.of("kind","DIRECTION","title","表达方向","options",options)),null);
+    var group=Json.map(((List<?>)service.messages(id).getLast().get("choices")).getFirst());
+    var option=Json.map(((List<?>)group.get("options")).get(3));
+    service.submit(id,Map.of("content","我选择 D：表达D，口语一些","choice",Map.of("messageId",service.messages(id).getLast().get("id"),"groupId",group.get("id"),"optionId",option.get("id"))),null);
+    assertThat(Json.map(service.raw(id).get("brief")).get("direction")).isEqualTo("表达D");
+    assertThatThrownBy(()->ProductionValidator.choices(List.of(Map.of("kind","TOPIC","title","选题","options",List.of(options.getFirst()))))).isInstanceOf(ApiException.class);
+  }
+
   String user(String name) {
     var response =
         auth.register(
-            Map.of("username", name, "password", "strong-test-password"),
+            Map.of("email", name + "@example.com", "username", name, "password", "strong-test-password"),
             new MockHttpServletRequest());
     String token = response.get("token").toString();
     use(token);
@@ -199,6 +274,26 @@ class ConversationIntegrationTest {
         "GENERATED",
         "instruction",
         "生成完整制作方案");
+  }
+
+  @Test
+  void newsEvidenceIsRetainedForFollowupAndCannotCrossAccountBoundary() {
+    String owner = user("news_owner");
+    String id = conversation();
+    String run = submit(id, "搜索汽车新闻");
+    running(id, run);
+    var source = Map.<String,Object>of("documentId", "web-news-one", "documentName", "新闻标题", "chunkId", "web-news-one", "text", "发布时间：2026-10-26T07:20:00Z\n真实新闻片段", "score", 0.0, "sourceUrl", "https://news.cctv.com/story.shtml");
+    service.live(id, run, "test-worker", "tool.completed", new LinkedHashMap<>(Map.of("tool", "search_news", "toolCallId", "news-call", "output", Map.of("sources", List.of(source)))));
+    assertThat(service.researchSources(id)).hasSize(1);
+    assertThat(service.detail(id).get("researchSources").toString()).contains("2026-10-26", "news.cctv.com");
+    service.finish(id, run, "test-worker", result("先讨论这条新闻", List.of()), null);
+    String next = submit(id, "继续讨论这条新闻");
+    var request = json.object(db.queryForObject("SELECT request_json FROM agent_runs WHERE id=?", String.class, next));
+    assertThat(request.get("researchSources").toString()).contains("web-news-one", "2026-10-26");
+    user("other_news_owner");
+    assertThatThrownBy(() -> service.detail(id)).isInstanceOf(ApiException.class);
+    assertThat(service.detail(conversation()).get("researchSources")).isEqualTo(List.of());
+    use(owner);
   }
 
   @Test

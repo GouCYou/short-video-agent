@@ -10,6 +10,7 @@ import {
   PhPushPinSlash,
   PhPencilSimple,
   PhTrash,
+  PhCircleNotch,
 } from "@phosphor-icons/vue";
 import { useWorkspace } from "../composables/useWorkspace";
 import { useAuth } from "../stores/auth";
@@ -84,12 +85,14 @@ function reload() {
 let timer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
   reload();
-  timer = setInterval(reload, 12000);
+  timer = setInterval(reload, 3000);
   window.addEventListener("studio:history-updated", reload);
+  window.addEventListener("focus", reload);
 });
 onUnmounted(() => {
   clearInterval(timer);
   window.removeEventListener("studio:history-updated", reload);
+  window.removeEventListener("focus", reload);
 });
 watch(() => workspace.historyVisible.value, reload);
 watch(
@@ -132,7 +135,13 @@ watch(
             @click="router.push('/conversations/' + c.id)"
           >
             {{ c.title }}</button
-          ><PhPushPin
+          ><PhCircleNotch
+            v-if="c.status === 'RUNNING' || c.activeRunId"
+            :size="16"
+            class="agent-spinner history-running"
+            role="status"
+            :aria-label="c.title + ' 正在生成'"
+          /><PhPushPin
             v-if="c.pinned"
             :size="14"
             class="history-pin"

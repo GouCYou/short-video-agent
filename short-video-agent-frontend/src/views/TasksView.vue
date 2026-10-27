@@ -101,7 +101,7 @@ async function command(action: string, c: Conversation) {
   try {
     if (action === "open" || action === "chat")
       return router.push(
-        `/conversations/${c.id}${action === "open" ? "?work=1" : ""}`,
+        action === "open" ? `/works/${c.id}` : `/conversations/${c.id}`,
       );
     if (action === "pin") await conversationApi.pin(c.id, !c.pinned);
     if (action === "rename") {
@@ -171,52 +171,42 @@ onMounted(load);
     </div>
     <LoadError v-if="error" :message="error" @retry="load" />
     <div v-else v-loading="busy" class="works-content">
-      <div v-if="filtered.length || oldWorks.length" class="works-grid">
-        <article v-for="c in filtered" :key="c.id" class="work-card">
-          <div class="work-card-top">
-            <span class="work-status">{{
-              c.artifact!.status === "FINAL" ? "已定稿" : "草稿"
-            }}</span
-            ><PhPushPin v-if="c.pinned" :size="16" /><StudioMenu
-              :items="items(c)"
-              :label="c.artifact!.title + ' 的操作'"
-              align="end"
-              @select="command($event, c)"
-              ><template #default="{ open }"
-                ><button
-                  class="icon-button"
-                  :aria-label="c.artifact!.title + ' 的操作'"
-                  :aria-expanded="open"
-                >
-                  <PhDotsThree :size="23" /></button></template
-            ></StudioMenu>
-          </div>
-          <button class="work-card-body" @click="command('open', c)">
-            <span class="work-art"
-              ><PhStackSimple :size="32" weight="duotone"
-            /></span>
-            <h2>{{ c.artifact!.title }}</h2>
+      <div v-if="filtered.length || oldWorks.length" class="works-list">
+        <article v-for="c in filtered" :key="c.id" class="work-row">
+          <button class="work-row-main" @click="command('open', c)">
+            <span class="work-row-icon"><PhStackSimple :size="24" /></span
+            ><span class="work-row-title"
+              ><strong>{{ c.artifact!.title }}</strong
+              ><span
+                >{{ c.brief.platform }} · {{ c.brief.duration }} 秒</span
+              ></span
+            ><PhPushPin v-if="c.pinned" :size="17" /><span
+              class="work-status"
+              >{{ c.artifact!.status === "FINAL" ? "已定稿" : "草稿" }}</span
+            ><time>{{ dateTime(c.artifact!.updatedAt) }}</time>
           </button>
-          <div class="work-card-footer">
-            <time>{{ dateTime(c.artifact!.updatedAt) }}</time
-            ><button @click="command('chat', c)">
-              继续对话<PhArrowUpRight :size="15" />
-            </button>
-          </div>
+          <StudioMenu
+            :items="items(c)"
+            :label="c.artifact!.title + ' 的操作'"
+            align="end"
+            @select="command($event, c)"
+            ><template #default="{ open }"
+              ><button
+                class="icon-button"
+                :aria-label="c.artifact!.title + ' 的操作'"
+                :aria-expanded="open"
+              >
+                <PhDotsThree :size="23" /></button></template
+          ></StudioMenu>
         </article>
-        <article
-          v-for="t in oldWorks"
-          :key="t.id"
-          class="work-card legacy-work"
-        >
-          <span class="work-status">已有作品</span
-          ><button
-            class="work-card-body"
-            @click="router.push('/tasks/' + t.id)"
-          >
-            <span class="work-art"><PhStackSimple :size="32" /></span>
-            <h2>{{ t.title }}</h2></button
-          ><time>{{ dateTime(t.updatedAt) }}</time>
+        <article v-for="t in oldWorks" :key="t.id" class="work-row legacy-work">
+          <button class="work-row-main" @click="router.push('/tasks/' + t.id)">
+            <span class="work-row-icon"><PhStackSimple :size="24" /></span
+            ><span class="work-row-title"
+              ><strong>{{ t.title }}</strong></span
+            ><span class="work-status">已有作品</span
+            ><time>{{ dateTime(t.updatedAt) }}</time>
+          </button>
         </article>
       </div>
       <div v-else-if="!busy" class="works-empty">

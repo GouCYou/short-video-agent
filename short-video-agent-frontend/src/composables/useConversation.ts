@@ -1,12 +1,14 @@
 import { computed, onUnmounted, ref } from "vue";
 import { conversationApi, streamConversation } from "../lib/conversation-api";
 import { errorMessage } from "../lib/api";
+import { useWorkspace } from "./useWorkspace";
 import type {
   Conversation,
   RunEvent,
   Selection,
 } from "../lib/conversation-types";
 export function useConversation() {
+  const workspace = useWorkspace();
   const conversation = ref<Conversation | null>(null),
     loading = ref(false),
     sending = ref(false),
@@ -54,6 +56,7 @@ export function useConversation() {
   }
   function apply(value: Conversation) {
     conversation.value = value;
+    workspace.trackConversation(value);
     ingest(value.events || []);
   }
   function accept(value: Conversation) {

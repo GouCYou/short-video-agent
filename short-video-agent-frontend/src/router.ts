@@ -34,6 +34,12 @@ const router = createRouter({
       meta: { title: "我的作品" },
     },
     {
+      path: "/works/:id",
+      name: "work",
+      component: () => import("./views/WorkView.vue"),
+      meta: { title: "作品详情" },
+    },
+    {
       path: "/tasks/new",
       name: "new-task",
       redirect: "/",
@@ -71,6 +77,12 @@ const router = createRouter({
       name: "users",
       component: () => import("./views/UsersView.vue"),
       meta: { admin: true, title: "用户管理" },
+    },
+    {
+      path: "/admin/model-settings",
+      name: "model-settings",
+      component: () => import("./views/ModelSettingsView.vue"),
+      meta: { admin: true, title: "模型接入" },
     },
     {
       path: "/:pathMatch(.*)*",

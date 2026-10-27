@@ -68,7 +68,7 @@ class UserKnowledgeIntegrationTest {
   String user(String name) {
     var session =
         auth.register(
-            Map.of("username", name, "password", "strong-password-123"),
+            Map.of("email", name + "@example.com", "username", name, "password", "strong-password-123"),
             new MockHttpServletRequest());
     String token = session.get("token").toString();
     use(token);

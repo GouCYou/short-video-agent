@@ -12,7 +12,7 @@ export interface Brief {
 }
 export interface ChoiceOption {
   id: string;
-  label: "A" | "B" | "C";
+  label: "A" | "B" | "C" | "D" | "E";
   title: string;
   description: string;
   value: string;
@@ -142,6 +142,8 @@ export interface ArtifactVersion {
   createdAt: string;
 }
 export interface Conversation {
+  executionsClearedThrough?: number;
+  researchSources?: Source[];
   id: string;
   title: string;
   status: "IDLE" | "RUNNING" | "WAITING_INPUT" | "FAILED";

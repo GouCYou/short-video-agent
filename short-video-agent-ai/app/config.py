@@ -1,4 +1,4 @@
-"""Environment-only settings. Model and embedding credentials are independent."""
+"""Immutable bootstrap settings. Model and embedding credentials are independent."""
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -6,6 +6,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Settings:
+    model_settings_path: Path | None = None
     mode: str = "real"
     internal_key: str = ""
     backend_internal_url: str = "http://127.0.0.1:8080"
@@ -20,7 +21,7 @@ class Settings:
     qdrant_collection: str = "short_video_knowledge"
     knowledge_dir: Path = Path("/data/knowledge")
     timeout: float = 120
-    retries: int = 2
+    retries: int = 4
     retrieval_min_score: float = 0.2
     chunk_size: int = 700
     chunk_overlap: int = 100
@@ -31,6 +32,7 @@ class Settings:
         if mode not in {"real", "demo"}:
             raise ValueError("AI_MODE must be real or demo")
         return cls(
+            model_settings_path=Path(os.getenv("MODEL_SETTINGS_PATH") or str(Path(os.getenv("KNOWLEDGE_DIR", "/data/knowledge")).resolve().parent / "model-settings.json")),
             mode=mode,
             internal_key=os.getenv("AI_INTERNAL_KEY", ""),
             backend_internal_url=os.getenv("BACKEND_INTERNAL_URL", "http://127.0.0.1:8080").rstrip("/"),
@@ -45,7 +47,7 @@ class Settings:
             qdrant_collection=os.getenv("QDRANT_COLLECTION", "short_video_knowledge"),
             knowledge_dir=Path(os.getenv("KNOWLEDGE_DIR", "/data/knowledge")).resolve(),
             timeout=max(5, min(float(os.getenv("AI_HTTP_TIMEOUT_SECONDS", "120")), 300)),
-            retries=max(0, min(int(os.getenv("AI_HTTP_RETRIES", "2")), 3)),
+            retries=max(0, min(int(os.getenv("AI_HTTP_RETRIES", "4")), 6)),
             retrieval_min_score=max(-1, min(float(os.getenv("RETRIEVAL_MIN_SCORE", "0.2")), 1)),
         )
 

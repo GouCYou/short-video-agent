@@ -75,6 +75,14 @@ export function toolSummary(
             .join("、"),
         );
     }
+  } else if (tool === "search_news") {
+    add("搜索内容", input.query);
+    if (typeof output.matchCount === "number")
+      add("找到新闻", `${output.matchCount} 条`);
+    if (Array.isArray(output.notices))
+      add("检索状态", output.notices.join("；"));
+  } else if (tool === "read_news") {
+    add("新闻", output.title);
   } else if (tool === "search_knowledge") {
     add("检索内容", input.query);
     add("知识分类", input.category);

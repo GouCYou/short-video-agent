@@ -19,6 +19,7 @@ describe("separate administration experience", () => {
       user: { ...user, role: "ADMIN" },
     });
     workspace.historyVisible.value = true;
+    workspace.toolsExpanded.value = true;
     workspace.history.value = [];
     const list = vi.spyOn(conversationApi, "list").mockResolvedValue([]);
     const router = createRouter({
@@ -62,6 +63,7 @@ describe("separate administration experience", () => {
     expect(wrapper.findAll(".admin-nav a").map((a) => a.text())).toEqual([
       "管理概览",
       "用户管理",
+      "模型接入",
     ]);
     list.mockClear();
     await router.push("/admin/users");
@@ -71,13 +73,19 @@ describe("separate administration experience", () => {
     await flushPromises();
     expect(router.currentRoute.value.path).toBe("/tasks");
     expect(wrapper.find(".admin-shell").exists()).toBe(false);
-    expect(wrapper.get(".studio-shell").classes()).toContain("history-visible");
+    expect(workspace.historyVisible.value).toBe(true);
+    expect(wrapper.get(".studio-shell").classes()).not.toContain(
+      "history-visible",
+    );
+    expect(wrapper.find(".workspace-history-panel").exists()).toBe(false);
+    expect(wrapper.get(".studio-sidebar").classes()).toContain("expanded");
     expect(
       wrapper.get(".studio-sidebar").find(".studio-history-list").exists(),
     ).toBe(false);
     wrapper.unmount();
     list.mockRestore();
     workspace.historyVisible.value = false;
+    workspace.toolsExpanded.value = false;
     auth.clear();
   });
 });

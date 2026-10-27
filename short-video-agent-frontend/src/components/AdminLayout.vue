@@ -8,6 +8,7 @@ import {
   PhSidebarSimple,
   PhArrowUUpLeft,
   PhSignOut,
+  PhPlugsConnected,
 } from "@phosphor-icons/vue";
 import { useAuth } from "../stores/auth";
 import { useWorkspace } from "../composables/useWorkspace";
@@ -20,6 +21,7 @@ const route = useRoute(),
 const links = [
   { path: "/admin", title: "管理概览", icon: PhChartBar },
   { path: "/admin/users", title: "用户管理", icon: PhUsers },
+  { path: "/admin/model-settings", title: "模型接入", icon: PhPlugsConnected },
 ];
 function returnToUser() {
   const path = sessionStorage.getItem("admin:return:" + auth.user?.id) || "/";
@@ -37,8 +39,7 @@ async function logout() {
     await auth.logout();
   } finally {
     workspace.history.value = [];
-    workspace.historyVisible.value = false;
-    workspace.toolsVisible.value = true;
+    workspace.toolsExpanded.value = false;
     void router.push("/login");
   }
 }

@@ -15,6 +15,7 @@ class ConversationService {
   private final MemoryService memory;
   private final AttachmentService attachments;
   private final UserKnowledgeService knowledge;
+  private final CreationSettingsService creationSettings;
 
   ConversationService(
       JdbcTemplate db,
@@ -23,7 +24,7 @@ class ConversationService {
       TransactionTemplate tx,
       MemoryService memory,
       AttachmentService attachments,
-      UserKnowledgeService knowledge) {
+      UserKnowledgeService knowledge, CreationSettingsService creationSettings) {
     this.db = db;
     this.json = json;
     this.auth = auth;
@@ -31,6 +32,7 @@ class ConversationService {
     this.memory = memory;
     this.attachments = attachments;
     this.knowledge = knowledge;
+    this.creationSettings = creationSettings;
   }
 
   Map<String, Object> view(ResultSet rs) throws SQLException {
@@ -38,6 +40,7 @@ class ConversationService {
     for (String key : List.of("id", "title", "status")) c.put(key, rs.getString(key));
     c.put("brief", json.object(rs.getString("brief_json")));
     c.put("activeRunId", rs.getString("active_run_id"));
+    c.put("executionsClearedThrough", rs.getLong("executions_cleared_through"));
     var retry =
         rs.getString("active_run_id") == null
             ? List.<String>of()
@@ -110,7 +113,7 @@ class ConversationService {
         id,
         auth.current().id(),
         title,
-        json.write(ProductionValidator.defaultBrief()));
+        json.write(creationSettings.get()));
     return detail(id);
   }
 
@@ -121,6 +124,7 @@ class ConversationService {
     c.put("events", eventsInternal(id, 0, 500));
     c.put("artifact", artifact(id));
     c.put("versions", versions(id));
+    c.put("researchSources", researchSources(id));
     return c;
   }
 
@@ -140,6 +144,23 @@ class ConversationService {
           return m;
         },
         id);
+  }
+
+  List<Map<String, Object>> researchSources(String id) {
+    var found = new LinkedHashMap<String, Map<String, Object>>();
+    var rows = db.queryForList(
+        "SELECT data_json FROM run_events WHERE conversation_id=? AND type='tool.completed' ORDER BY id DESC LIMIT 30",
+        String.class, id);
+    for (String row : rows) {
+      var data = json.object(row);
+      if (!Set.of("search_news", "read_news").contains(Json.str(data, "tool", ""))) continue;
+      var output = Json.map(data.get("output"));
+      for (var source : ProductionValidator.sources(output.getOrDefault("sources", List.of()))) {
+        if (found.size() >= 30) break;
+        found.putIfAbsent(Json.str(source, "chunkId", ""), source);
+      }
+    }
+    return new ArrayList<>(found.values());
   }
 
   Map<String, Object> artifact(String id) {
@@ -236,12 +257,31 @@ class ConversationService {
         s -> {
           lockOwner(id);
           idle(id);
+          memory.forgetConversation(id);
           db.update("DELETE FROM conversations WHERE id=?", id);
         });
   }
 
   Map<String, Object> submit(String id, Map<String, Object> body, String key) {
     return submitInternal(id, body, key, null);
+  }
+
+  Map<String, Object> updateBrief(String id, Map<String, Object> brief) {
+    ProductionValidator.brief(brief);
+    tx.executeWithoutResult(s -> {
+      lockOwner(id); idle(id);
+      db.update("UPDATE conversations SET brief_json=?,updated_at=CURRENT_TIMESTAMP(6) WHERE id=?",json.write(brief),id);
+    });
+    return detail(id);
+  }
+
+  Map<String, Object> clearExecutions(String id) {
+    tx.executeWithoutResult(s -> {
+      lockOwner(id);
+      Long cursor=db.queryForObject("SELECT COALESCE(MAX(id),0) FROM run_events WHERE conversation_id=?",Long.class,id);
+      db.update("UPDATE conversations SET executions_cleared_through=? WHERE id=?",cursor,id);
+    });
+    return detail(id);
   }
 
   Map<String, Object> retry(String id, String messageId, String key) {
@@ -304,6 +344,12 @@ class ConversationService {
                           id)
                       != 1) throw ApiException.missing();
               var files = attachments.selected(id, body.get("attachmentIds"));
+              if (retryOf != null) {
+                memory.forgetConversation(id);
+                var metadata=Json.map(json.object(db.queryForObject("SELECT metadata_json FROM conversation_messages WHERE id=? AND conversation_id=?",String.class,retryOf,id)));
+                metadata.remove("summary");
+                db.update("UPDATE conversation_messages SET metadata_json=? WHERE id=? AND conversation_id=?",json.write(metadata),retryOf,id);
+              }
               var brief = new LinkedHashMap<String, Object>(Json.map(raw(id).get("brief")));
               Map<String, Object> selection = choice == null ? null : selectChoice(id, choice);
               if (selection != null)
@@ -423,6 +469,7 @@ class ConversationService {
     request.put("brief", brief);
     request.put("memory", memory.context(id));
     request.put("conversationSummary", Json.str(raw(id), "summary", ""));
+    request.put("researchSources", researchSources(id));
     request.put("historyWorks", memory.works(id));
     request.put("documents", attachments.context(id, history));
     request.put(
@@ -726,7 +773,7 @@ class ConversationService {
                   + " id=?",
               id);
           if (retryTarget(run) == null)
-            insertMessage(id, "assistant", message + "。已有消息和作品已保留，可以重新发送需求。", List.of(), run);
+            insertMessage(id, "assistant", message.strip().replaceAll("[。.!！?？]+$", "") + "。已有消息和作品已保留，可以重试。", List.of(), run);
           event(id, run, "run.failed", Map.of("message", message));
         });
   }

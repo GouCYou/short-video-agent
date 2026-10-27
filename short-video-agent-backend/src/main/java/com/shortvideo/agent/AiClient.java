@@ -47,6 +47,11 @@ class AiClient {
     return (Map<String, Object>) request(HttpMethod.GET, "/internal/health", null, Map.class);
   }
 
+  @SuppressWarnings("unchecked")
+  Map<String,Object> modelSettings() {
+    return (Map<String,Object>)request(HttpMethod.GET,"/internal/model-settings",null,Map.class);
+  }
+
   void put(String path, Object body) {
     request(HttpMethod.PUT, path, body, Map.class);
   }

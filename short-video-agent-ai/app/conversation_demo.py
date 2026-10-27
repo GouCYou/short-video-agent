@@ -145,7 +145,7 @@ async def run_demo(agent, ctx):
                 kind = None
                 answer = "你更想做哪类内容？先聊一个感兴趣的领域，或者想让观众了解的事。"
             elif kind:
-                answer = "这三个选择可以作为讨论的起点，也可以用 D 说说你自己的想法。"
+                answer = "这些选择可以作为讨论的起点，也可以直接说说你自己的想法。"
             else:
                 answer = "可以，我们先聊聊你的想法。你现在最想讨论哪一部分？"
         if kind:

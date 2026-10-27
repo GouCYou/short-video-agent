@@ -167,16 +167,16 @@ final class ProductionValidator {
       String kind = Json.required(candidate, "kind", 20);
       if (!KINDS.contains(kind) || !seen.add(kind)) throw ApiException.bad("选项组类型无效或重复");
       String title = Json.required(candidate, "title", 300);
-      if (!(candidate.get("options") instanceof List<?> options) || options.size() != 3)
-        throw ApiException.bad("每组选项必须包含 A、B、C 三项");
+      if (!(candidate.get("options") instanceof List<?> options) || options.size() < 2 || options.size() > 5)
+        throw ApiException.bad("每组选项须包含 2 到 5 项");
       var canonical = new ArrayList<Map<String, Object>>();
       Set<String> values = new HashSet<>();
       int index = 0;
       for (Object option : options) {
         var o = Json.map(option);
         String label = Json.required(o, "label", 1);
-        if (!label.equals(List.of("A", "B", "C").get(index++)))
-          throw ApiException.bad("选项必须按 A、B、C 顺序排列");
+        if (!label.equals(List.of("A", "B", "C", "D", "E").get(index++)))
+          throw ApiException.bad("选项必须从 A 开始按字母顺序排列");
         String optionValue = Json.required(o, "value", 2000);
         if (!values.add(optionValue)) throw ApiException.bad("选项内容不可重复");
         canonical.add(

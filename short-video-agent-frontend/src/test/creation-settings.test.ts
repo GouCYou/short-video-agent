@@ -1,0 +1,21 @@
+import {mount,flushPromises} from '@vue/test-utils';
+import {it,expect,vi} from 'vitest';
+import ElementPlus,{ElMessageBox} from 'element-plus';
+import CreationDefaultsPanel from '../components/CreationDefaultsPanel.vue';
+import {creationSettingsApi} from '../lib/creation-settings';
+import {conversation} from './conversation-fixtures';
+it('saves personal defaults and requires confirmation to restore system values',async()=>{
+ const brief=conversation().brief;
+ const get=vi.spyOn(creationSettingsApi,'get').mockResolvedValue({...brief,duration:90});
+ const save=vi.spyOn(creationSettingsApi,'save').mockImplementation(async value=>value);
+ const reset=vi.spyOn(creationSettingsApi,'reset').mockResolvedValue({...brief,duration:60});
+ const confirm=vi.spyOn(ElMessageBox,'confirm').mockRejectedValueOnce('cancel').mockResolvedValueOnce('confirm' as never);
+ const wrapper=mount(CreationDefaultsPanel,{global:{plugins:[ElementPlus]}});await flushPromises();
+ const buttons=()=>wrapper.findAll('button');
+ await buttons().find(b=>b.text()==='保存默认值')!.trigger('click');await flushPromises();
+ expect(save.mock.calls[0]![0].duration).toBe(90);
+ await buttons().find(b=>b.text()==='恢复默认')!.trigger('click');await flushPromises();expect(reset).not.toHaveBeenCalled();
+ await buttons().find(b=>b.text()==='恢复默认')!.trigger('click');await flushPromises();expect(reset).toHaveBeenCalledTimes(1);
+ expect(wrapper.getComponent({name:'ElInputNumber'}).props('modelValue')).toBe(60);
+ wrapper.unmount();get.mockRestore();save.mockRestore();reset.mockRestore();confirm.mockRestore();
+});

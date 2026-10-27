@@ -1,0 +1,25 @@
+import {mount,flushPromises} from '@vue/test-utils';
+import ElementPlus from 'element-plus';
+import {it,expect,vi} from 'vitest';
+import ModelSettingsView from '../views/ModelSettingsView.vue';
+import {modelSettingsApi} from '../lib/model-settings';
+it('shows only a non-copyable mask and keeps the key when changing only the model',async()=>{
+ const view={model:'old-model',baseUrl:'https://api.example.com/v1',maskedKey:'sk-old••••••••1234',hasKey:true,revision:1,updatedAt:null,format:'OpenAI-compatible'};
+ const get=vi.spyOn(modelSettingsApi,'get').mockResolvedValue(view);
+ const save=vi.spyOn(modelSettingsApi,'save').mockResolvedValue({...view,model:'new-model',revision:2});
+ const wrapper=mount(ModelSettingsView,{global:{plugins:[ElementPlus]}});await flushPromises();
+ const mask=wrapper.get('.model-masked-key');expect(mask.text()).toContain(view.maskedKey);
+ const copy=new Event('copy',{cancelable:true});mask.element.dispatchEvent(copy);expect(copy.defaultPrevented).toBe(true);
+ expect(wrapper.find('input[type="password"]').exists()).toBe(false);
+ await wrapper.findAll('input')[0]!.setValue('new-model');
+ await wrapper.get('form').trigger('submit');await flushPromises();
+ expect(save).toHaveBeenCalledWith({model:'new-model',baseUrl:view.baseUrl,revision:1});
+ expect(wrapper.text()).toContain('OpenAI 兼容格式');
+ await wrapper.get('.model-replace-key').trigger('click');await flushPromises();
+ const input=wrapper.get('input[type="password"]');await input.setValue('sk-new-secret-987654');
+ save.mockResolvedValue({...view,model:'new-model',maskedKey:'sk-new••••••••7654',revision:3});
+ await wrapper.get('form').trigger('submit');await flushPromises();
+ expect(save.mock.calls.at(-1)![0].apiKey).toBe('sk-new-secret-987654');
+ expect(wrapper.find('input[type="password"]').exists()).toBe(false);expect(wrapper.html()).not.toContain('sk-new-secret-987654');
+ wrapper.unmount();get.mockRestore();save.mockRestore();
+});

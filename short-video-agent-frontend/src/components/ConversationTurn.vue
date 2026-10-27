@@ -28,6 +28,7 @@ const props = defineProps<{
   canRetry?: boolean;
   regenerating?: boolean;
   liveText?: string;
+  conversationId?: string;
 }>();
 const emit = defineEmits<{
   retry: [];
@@ -35,6 +36,11 @@ const emit = defineEmits<{
 }>();
 const copied = ref(false),
   expanded = ref(false);
+const displayContent = computed(() =>
+  props.message.role === "assistant"
+    ? props.message.content.replace(/。{2,}(?=已有消息和作品已保留)/g, "。")
+    : props.message.content,
+);
 const thinkingDuration = computed(() =>
   durationText(
     props.message.metadata?.thinkingMs ??
@@ -78,9 +84,16 @@ const relatedWorks = computed(() => {
   }
   return [...found.values()];
 });
+const generatedWork = computed(() => {
+  if (props.message.role !== "assistant" || !props.conversationId) return null;
+  const update = props.events.filter(e => e.runId === props.message.runId && e.type === "artifact.updated").at(-1);
+  const artifact = update?.data.artifact as { title?: string; content?: { title?: string }; versionNumber?: number } | undefined;
+  if (!artifact) return null;
+  return { title: artifact.title || artifact.content?.title || "作品方案", version: artifact.versionNumber };
+});
 async function copy() {
   try {
-    await navigator.clipboard.writeText(props.message.content);
+    await navigator.clipboard.writeText(displayContent.value);
     copied.value = true;
     setTimeout(() => (copied.value = false), 1800);
   } catch {
@@ -100,7 +113,7 @@ async function copy() {
       <div class="message-body">
         <template v-if="regenerating">
           <div class="regenerating-status" role="status">
-            <PhCircleNotch class="is-loading" :size="16" /><span
+            <PhCircleNotch class="agent-spinner" :size="16" /><span
               >重新生成中</span
             >
           </div>
@@ -147,7 +160,7 @@ async function copy() {
           </div>
           <ChatMessage
             v-if="message.role === 'assistant' && message.content"
-            :content="message.content"
+            :content="displayContent"
           />
           <div v-else-if="message.content" class="message-content">
             {{ message.content }}
@@ -159,11 +172,14 @@ async function copy() {
             :disabled="disabled"
             @select="emit('select', $event)"
           />
+          <router-link v-if="generatedWork" :to="'/works/' + conversationId" class="message-work-card">
+            <PhStackSimple :size="25" /><span><strong>{{ generatedWork.title }}</strong><span>作品方案<span v-if="generatedWork.version"> · V{{ generatedWork.version }}</span></span></span><PhArrowUpRight :size="20" />
+          </router-link>
           <div v-if="relatedWorks.length" class="message-related-works">
             <router-link
               v-for="work in relatedWorks"
               :key="work.id"
-              :to="`/conversations/${work.conversationId}?work=1`"
+              :to="`/works/${work.conversationId}`"
               ><PhStackSimple :size="21" /><span>{{ work.title }}</span
               ><PhArrowUpRight :size="17"
             /></router-link>

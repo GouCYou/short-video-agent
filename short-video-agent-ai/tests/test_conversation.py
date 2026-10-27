@@ -15,6 +15,7 @@ from app.conversation_provider import AnswerFilter
 from app.knowledge import Knowledge
 from app.main import create_app
 from app.providers import Provider
+from app.identity import AGENT_INTRO, IdentityOutputFilter, is_identity_question
 
 
 HEADERS = {"X-Internal-Key": "conversation-secret"}
@@ -91,6 +92,71 @@ def ndjson(client, data):
 
 def types(frames):
     return [frame["type"] for frame in frames]
+
+
+
+@pytest.mark.parametrize("question", ["你是谁", "你是什么模型？", "那你到底是什么模型", "你是DeepSeek吗？", "你不是deepseek-v4.1-flash吗", "请介绍一下你自己", "What model are you?", "Who are you?"])
+def test_product_identity_is_canonical_even_in_contaminated_old_conversations(question):
+    provider = ScriptedProvider()
+    request = body(question)
+    request["messages"] = [
+        {"role": "user", "content": "你是谁"},
+        {"role": "assistant", "content": "我是 deepseek-v4.1-flash，可以当你的创作搭档。"},
+        {"role": "user", "content": question},
+    ]
+    request["conversationSummary"] = "助手此前自称 deepseek-v4.1-flash。"
+    with TestClient(create_app(settings(), transport=httpx.MockTransport(provider))) as client:
+        frames = ndjson(client, request)
+    assert not provider.requests
+    assert types(frames) == ["run.started", "message.delta", "final"]
+    assert frames[-1]["data"]["content"] == AGENT_INTRO
+    assert frames[-1]["data"]["usage"] == {"inputTokens": 0, "outputTokens": 0}
+    assert frames[-1]["data"]["responseSource"] == "agent_identity"
+    assert frames[1]["data"]["text"] == AGENT_INTRO
+
+
+@pytest.mark.parametrize("protocol", ["sse", "json", "fallback"])
+def test_ordinary_chat_uses_configured_model_but_checks_identity_before_streaming(protocol):
+    text = "我是 deepseek-v4.1-flash，可以帮你规划拍摄。先选择柔和的侧光。"
+    reply = (httpx.Response(200, json={"choices": [{"message": {"content": text}, "finish_reason": "stop"}]})
+             if protocol == "json" else response(text=text))
+    turns, structured = [reply], []
+    if protocol == "fallback":
+        turns.insert(0, httpx.Response(400, json={"error": {"message": "This model does not support tools", "param": "tools"}}))
+        structured = [{"tool": "respond", "arguments": {}}]
+    provider = ScriptedProvider(turns, structured)
+    request = body("我们继续聊拍摄")
+    request["messages"].insert(0, {"role": "assistant", "content": "我是 deepseek-v4.1-flash，可以帮你规划拍摄。"})
+    with TestClient(create_app(settings(), transport=httpx.MockTransport(provider))) as client:
+        frames = ndjson(client, request)
+    payload = provider.requests[-1]
+    assert payload["model"] == "conversation-model"
+    assert payload["messages"][0]["role"] == "system"
+    assert "知映短视频创作 Agent" in payload["messages"][0]["content"]
+    assert "deepseek" not in payload["messages"][1]["content"]
+    assert "deepseek" in request["messages"][0]["content"]  # no mutation of stored history
+    answer = frames[-1]["data"]["content"]
+    assert answer == "我是知映短视频创作 Agent，可以帮你规划拍摄。先选择柔和的侧光。"
+    assert answer == "".join(frame["data"]["text"] for frame in frames if frame["type"] == "message.delta")
+    assert "deepseek" not in json.dumps(frames).lower()
+
+
+@pytest.mark.parametrize("text", ["比较 DeepSeek 和 Qwen 对写脚本的影响", "帮我写一个‘你是谁’主题的脚本", "介绍一下 DeepSeek", "你是谁，顺便帮我写一份咖啡脚本"])
+def test_identity_routing_does_not_swallow_creative_requests(text):
+    assert not is_identity_question(text)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("我是 deepseek-v4.1-flash，可以当你的创作搭档。", "我是知映短视频创作 Agent，可以当你的创作搭档。"),
+    ("I am DeepSeek-v4.1-flash, your creative assistant.", "我是知映短视频创作 Agent, your creative assistant."),
+    ("DeepSeek 和 Qwen 的差别可以作为选题。", "DeepSeek 和 Qwen 的差别可以作为选题。"),
+    ("台词：‘我是 DeepSeek，一个虚构角色。’", "台词：‘我是 DeepSeek，一个虚构角色。’"),
+    ("```text\n我是 deepseek-v4.1-flash。\n```", "```text\n我是 deepseek-v4.1-flash。\n```"),
+])
+def test_identity_output_check_handles_one_character_stream_frames(text, expected):
+    output = IdentityOutputFilter()
+    actual = "".join(output.feed(character) for character in text) + output.feed("", final=True)
+    assert actual == expected
 
 
 def test_native_tools_abc_and_genuine_answer_delta_no_reasoning():
@@ -449,3 +515,34 @@ def test_knowledge_tool_rejects_invented_text_before_callback():
     failure = next(f for f in frames if f["type"] == "tool.failed")["data"]
     assert "原文" in failure["message"]
     assert len(provider.requests) == 3
+
+@pytest.mark.parametrize('text', ['直接为我生成最终方案', '按已有方案为我修改，把语气改成更自然的口语，然后交付修改后的方案'])
+def test_direct_delivery_and_attached_plan_create_a_complete_work(text):
+    package = fixture_package()
+    document = {'id':'owned-plan','name':'原作品方案.md','text':'原方案：手机拍城市散步，四段分镜，后期旁白。'}
+    provider = ScriptedProvider([
+        response(calls=[call('read_document', {'documentId':'owned-plan'})]),
+        response(calls=[call('create_production', {'instruction':text})]),
+        response(text='方案已生成。')],
+        [{'allowed':True}, {'content':package,'usedChunkIds':[]}])
+    with TestClient(create_app(settings(), transport=httpx.MockTransport(provider))) as client:
+        frames=ndjson(client,body(text,documents=[document]))
+    assert 'error' not in types(frames)
+    assert any(f['type']=='tool.completed' and f['data']['tool']=='read_document' for f in frames)
+    assert next(f['data'] for f in frames if f['type']=='artifact.updated')['content']==package
+    assert frames[-1]['data']['choices']==[]
+
+@pytest.mark.parametrize('count',[2,4,5])
+def test_dynamic_choice_counts_use_contiguous_labels_and_no_synthetic_custom_option(count):
+    from app.conversation_models import ProposeOptions
+    proposal={'kind':'DIRECTION','title':'选择角度','options':[{'label':label,'title':'角度'+label,'description':'说明'+label,'value':'内容'+label} for label in 'ABCDE'[:count]]}
+    parsed=ProposeOptions.model_validate(proposal)
+    assert len(parsed.options)==count
+    assert [o.label for o in parsed.options]==list('ABCDE'[:count])
+
+@pytest.mark.parametrize('count',[0,1,6,12])
+def test_unreasonable_choice_counts_are_rejected(count):
+    from app.conversation_models import ProposeOptions
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        ProposeOptions.model_validate({'kind':'TOPIC','title':'选题','options':[{'label':'A','title':'标题','description':'说明','value':str(i)} for i in range(count)]})

@@ -15,13 +15,9 @@ import {
   Close,
   Download,
   EditPen,
-  Expand,
   Loading,
   Operation,
   Refresh,
-  SwitchButton,
-  Document,
-  Link as LinkIcon,
 } from "@element-plus/icons-vue";
 import {
   conversationApi,
@@ -29,9 +25,10 @@ import {
   toolLabels,
 } from "../lib/conversation-api";
 import { errorMessage } from "../lib/api";
+import StudioConfirm from "../components/StudioConfirm.vue";
+import { workspaceToolGroups, workspaceSources } from "../lib/workspace-feed";
 import { toolSummary } from "../lib/tool-summary";
-import type { Source } from "../lib/types";
-import { dateTime, safeUrl } from "../lib/format";
+import { dateTime } from "../lib/format";
 import type {
   ArtifactVersion,
   ProductionPackage,
@@ -39,6 +36,7 @@ import type {
   Attachment,
 } from "../lib/conversation-types";
 import { useConversation } from "../composables/useConversation";
+import { useChoiceDraft } from "../composables/useChoiceDraft";
 import ConversationTurn from "../components/ConversationTurn.vue";
 import { useWorkspace } from "../composables/useWorkspace";
 import {
@@ -46,9 +44,40 @@ import {
   PhPaperclip,
   PhX,
   PhFileText,
+  PhStackSimple,
+  PhSlidersHorizontal,
+  PhTrash,
 } from "@phosphor-icons/vue";
 import AnimatedDisclosure from "../components/AnimatedDisclosure.vue";
-import ProductionDocument from "../components/ProductionDocument.vue";
+import ProductionCanvas from "../components/ProductionCanvas.vue";
+import NewsSourceCard from "../components/NewsSourceCard.vue";
+import StudioMenu from "../components/StudioMenu.vue";
+import WorkAttachmentPicker from "../components/WorkAttachmentPicker.vue";
+import CreationRequirementsEditor from "../components/CreationRequirementsEditor.vue";
+import { creationSettingsApi } from "../lib/creation-settings";
+import type { Brief } from "../lib/conversation-types";
+const workPickerOpen = ref(false);
+const requirementsOpen=ref(false), requirementsDraft=ref<Brief>(), requirementsSaving=ref(false), clearingExecutions=ref(false);
+async function openRequirements(){
+  try{requirementsDraft.value=JSON.parse(JSON.stringify(conversation.value?.brief || await creationSettingsApi.get()));requirementsOpen.value=true;}catch(e){ElMessage.error(errorMessage(e));}
+}
+async function saveRequirements(){
+  if(!requirementsDraft.value || running.value)return;
+  requirementsSaving.value=true;
+  try{const id=await state.ensure(id=>{void router.replace('/conversations/'+id);});const value=await creationSettingsApi.updateBrief(id,requirementsDraft.value);if(conversation.value?.id!==id)return;state.accept(value);requirementsOpen.value=false;ElMessage.success('当前对话要求已更新');}catch(e){ElMessage.error(errorMessage(e));}finally{requirementsSaving.value=false;}
+}
+async function resetRequirements(){try{requirementsDraft.value=await creationSettingsApi.get();}catch(e){ElMessage.error(errorMessage(e));}}
+const clearConfirmOpen=ref(false),clearTarget=ref('');
+function clearExecutions(){
+ if(!conversation.value||clearingExecutions.value)return;
+ clearTarget.value=conversation.value.id;clearConfirmOpen.value=true;
+}
+async function confirmClearExecutions(){
+ const id=clearTarget.value;
+ if(clearingExecutions.value||conversation.value?.id!==id){clearConfirmOpen.value=false;return;}
+ clearingExecutions.value=true;
+ try{const value=await creationSettingsApi.clearExecutions(id);if(conversation.value?.id===id)state.accept(value);clearConfirmOpen.value=false;}catch(e){ElMessage.error(errorMessage(e));}finally{clearingExecutions.value=false;}
+}
 const route = useRoute(),
   router = useRouter();
 const state = useConversation(),
@@ -67,7 +96,6 @@ const state = useConversation(),
 const workspace = useWorkspace(),
   { history, historyError } = workspace;
 const rightOpen = ref(!window.matchMedia("(max-width: 1150px)").matches),
-  rightTab = ref("execution"),
   composer = ref(""),
   scrollArea = ref<HTMLElement | null>(null),
   composerRef = ref<InstanceType<
@@ -87,6 +115,7 @@ const rightOpen = ref(!window.matchMedia("(max-width: 1150px)").matches),
   fileInput = ref<HTMLInputElement | null>(null);
 let disposed = false,
   historyEpoch = 0;
+const choiceDraft=useChoiceDraft(composer);
 const versions = computed(() =>
     [...(conversation.value?.versions || [])].sort(
       (a, b) => b.versionNumber - a.versionNumber,
@@ -109,35 +138,7 @@ const artifact = computed(() => conversation.value?.artifact || null),
           /DEMO|演示模式|演示内容/i.test(note),
         );
   });
-const sources = computed(() => {
-  const found = new Map<string, Source>();
-  const add = (items: unknown) => {
-    if (!Array.isArray(items)) return;
-    for (const item of items) {
-      if (
-        item &&
-        typeof item.chunkId === "string" &&
-        typeof item.documentName === "string" &&
-        typeof item.text === "string"
-      ) {
-        found.set(`${item.documentId}:${item.chunkId}`, item as Source);
-      }
-    }
-  };
-  for (const event of liveEvents.value) {
-    if (
-      event.type === "tool.completed" &&
-      ["search_knowledge", "read_document"].includes(
-        String(event.tool || event.data.tool),
-      )
-    ) {
-      const output = event.data.output as Record<string, unknown> | undefined;
-      add(output?.sources);
-    }
-  }
-  add(artifact.value?.sources);
-  return [...found.values()];
-});
+const sources = computed(() => workspaceSources(liveEvents.value,conversation.value?.researchSources,artifact.value?.sources,conversation.value?.executionsClearedThrough));
 const briefRows = computed(() => {
   const brief = conversation.value?.brief;
   if (!brief) return [];
@@ -165,65 +166,7 @@ const briefRows = computed(() => {
       : [];
   });
 });
-const tools = computed(() => {
-  const map = new Map<
-    string,
-    {
-      id: string;
-      runId: string;
-      tool: string;
-      status: string;
-      input: unknown;
-      output: unknown;
-      durationMs?: number;
-      message: string;
-    }
-  >();
-  for (const event of liveEvents.value) {
-    if (!event.type.startsWith("tool.")) continue;
-    const id = event.toolCallId || String(event.data.toolCallId || event.id),
-      tool = event.tool || String(event.data.tool || "");
-    const item = map.get(id) || {
-      id,
-      runId: event.runId,
-      tool,
-      status: "RUNNING",
-      input: null,
-      output: null,
-      message: "",
-    };
-    if (event.type === "tool.started") item.input = event.data.input;
-    if (event.type === "tool.completed") {
-      item.status = "COMPLETED";
-      item.output = event.data.output;
-      if (typeof event.data.durationMs === "number")
-        item.durationMs = event.data.durationMs;
-    }
-    if (event.type === "tool.failed") {
-      item.status = "FAILED";
-      item.message = String(event.data.message || "执行失败");
-    }
-    map.set(id, item);
-  }
-  for (const item of map.values()) {
-    if (item.status !== "RUNNING") continue;
-    const stopped = liveEvents.value.some(
-      (event) =>
-        event.runId === item.runId &&
-        [
-          "run.cancelled",
-          "run.failed",
-          "run.completed",
-          "run.waiting_input",
-        ].includes(event.type),
-    );
-    if (stopped) {
-      item.status = "STOPPED";
-      item.message = "已停止";
-    }
-  }
-  return [...map.values()];
-});
+const tools = computed(() => workspaceToolGroups(liveEvents.value,conversation.value?.executionsClearedThrough));
 const runError = computed(() => {
   if (conversation.value?.status !== "FAILED") return "";
   const failure = liveEvents.value
@@ -235,15 +178,13 @@ const runError = computed(() => {
       "本次执行失败，请重新发送消息。",
   );
 });
-const statusText = computed(() =>
-  running.value
-    ? "正在执行"
-    : conversation.value?.status === "WAITING_INPUT"
-      ? "等待选择"
-      : conversation.value?.status === "FAILED"
-        ? "执行失败"
-        : "已就绪",
-);
+const visibleError = computed(() => {
+  const message = error.value || runError.value;
+  const last = conversation.value?.messages?.at(-1);
+  return message && last?.role === "assistant" && last.content.includes(message)
+    ? ""
+    : message;
+});
 async function loadHistory() {
   const epoch = ++historyEpoch;
   try {
@@ -261,6 +202,7 @@ async function loadRoute() {
   if (id && conversation.value?.id === id) return;
   artifactOpen.value = false;
   editorActive.value = false;
+  choiceDraft.clear();
   await state.load(id);
   if (route.query.work && conversation.value?.artifact) openArtifact();
   uploads.value = [];
@@ -303,13 +245,6 @@ watch(
   () => conversation.value?.messages?.length,
   () => scrollBottom(),
 );
-watch(
-  () => artifact.value?.versionNumber,
-  (value, old) => {
-    if (value && value !== old && !editorActive.value)
-      rightTab.value = "artifact";
-  },
-);
 async function scrollBottom(force = true) {
   await nextTick();
   const element = scrollArea.value;
@@ -332,7 +267,8 @@ async function newConversation() {
 }
 async function send(choice?: Selection) {
   if (running.value || sending.value || uploading.value) return;
-  const text = choice ? "" : composer.value.trim();
+  try{choice=choice||choiceDraft.selection();}catch(e){ElMessage.warning(errorMessage(e));return;}
+  const text = composer.value.trim();
   if (!choice && !text && !uploads.value.length) return;
   const sent = await state.send(
     text,
@@ -340,19 +276,22 @@ async function send(choice?: Selection) {
     (id) => {
       void router.replace(`/conversations/${id}`);
     },
-    choice ? [] : uploads.value.map((f) => f.id),
+    uploads.value.map((f) => f.id),
   );
   if (sent) {
-    if (!choice) {
+    {
       composer.value = "";
       uploads.value = [];
+      choiceDraft.clear();
     }
     await loadHistory();
     await scrollBottom();
   }
 }
 function choose(messageId: string, selection: Omit<Selection, "messageId">) {
-  void send({ messageId, ...selection });
+  const message=conversation.value?.messages.find(m=>m.id===messageId);
+  if(!message||running.value||sending.value||!choiceDraft.stage(message,selection))return;
+  void nextTick(()=>{composerRef.value?.focus();const input=composerRef.value?.textarea;input?.setSelectionRange(composer.value.length,composer.value.length);});
 }
 function keydown(event: KeyboardEvent) {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -390,6 +329,9 @@ async function attachFiles(event: Event) {
   const input = event.target as HTMLInputElement,
     files = [...(input.files || [])];
   input.value = "";
+  await uploadFiles(files);
+}
+async function uploadFiles(files: File[]) {
   if (!files.length || uploading.value) return;
   if (uploads.value.length + files.length > 6) {
     ElMessage.warning("每条消息最多上传 6 个文件");
@@ -606,13 +548,14 @@ function validatePackage(value: ProductionPackage) {
           <h1>{{ conversation?.title || "新对话" }}</h1>
           <el-tag v-if="isDemo" type="warning" effect="plain">演示模式</el-tag>
         </div>
-        <el-button
-          text
-          circle
-          :icon="Operation"
+        <button
+          type="button"
+          class="icon-button workspace-toggle"
           :aria-label="rightOpen ? '收起工作区' : '打开工作区'"
+          :title="rightOpen ? '收起工作区' : '打开工作区'"
+          :aria-expanded="rightOpen"
           @click="rightOpen = !rightOpen"
-        />
+        ><PhSlidersHorizontal :size="19" /></button>
       </header>
       <div
         ref="scrollArea"
@@ -633,6 +576,7 @@ function validatePackage(value: ProductionPackage) {
           v-for="(message, index) in conversation?.messages || []"
           :key="message.id"
           :message="message"
+          :conversation-id="conversation?.id"
           :events="liveEvents"
           :timestamp="timestampFor(index)"
           :disabled="running || sending"
@@ -673,8 +617,8 @@ function validatePackage(value: ProductionPackage) {
           </div>
         </article>
         <el-alert
-          v-if="error || runError"
-          :title="error || runError"
+          v-if="visibleError"
+          :title="visibleError"
           type="error"
           show-icon
           :closable="false"
@@ -714,15 +658,16 @@ function validatePackage(value: ProductionPackage) {
             'is-multiline': composer.includes('\n') || composer.length > 80,
           }"
         >
+          <StudioMenu :items="[{ id: 'document', label: '上传文档', icon: PhFileText }, { id: 'work', label: '已有作品', icon: PhStackSimple }, {id:'requirements',label:'创作要求',icon:PhSlidersHorizontal}]" label="添加附件" @select="(action) => action === 'requirements' ? openRequirements() : action === 'work' ? workPickerOpen = true : fileInput?.click()">
           <button
             class="icon-button attach-button"
-            aria-label="上传文档"
-            title="上传文档"
+            aria-label="添加附件"
+            title="添加附件"
             :disabled="uploading || sending || running"
-            @click="fileInput?.click()"
           >
             <PhPaperclip :size="22" />
           </button>
+          </StudioMenu>
           <el-input
             ref="composerRef"
             v-model="composer"
@@ -735,14 +680,18 @@ function validatePackage(value: ProductionPackage) {
             @keydown="keydown"
           />
           <div class="composer-actions">
-            <el-button
+            <button
               v-if="running"
-              :icon="SwitchButton"
-              class="stop-button"
-              :loading="cancelling"
+              type="button"
+              class="composer-stop-button"
+              aria-label="停止生成"
+              :aria-busy="cancelling"
+              :disabled="cancelling"
               @click="state.cancel"
-              >停止</el-button
-            ><el-button
+            >
+              <span class="stop-square" aria-hidden="true"></span>
+            </button>
+            <el-button
               v-else
               type="primary"
               circle
@@ -756,6 +705,12 @@ function validatePackage(value: ProductionPackage) {
         </div>
       </div>
     </section>
+    <StudioConfirm v-model="clearConfirmOpen" title="清空工作区记录？" description="执行记录和历史搜到的新闻将一起清空。" note="聊天与作品会保留。" :busy="clearingExecutions" @confirm="confirmClearExecutions" />
+    <WorkAttachmentPicker v-model="workPickerOpen" @select="file => uploadFiles([file])" />
+    <el-dialog v-model="requirementsOpen" title="当前对话的创作要求" width="min(760px,94vw)" :close-on-click-modal="!requirementsSaving">
+      <CreationRequirementsEditor v-if="requirementsDraft" v-model="requirementsDraft" current-conversation :disabled="requirementsSaving || running" />
+      <template #footer><el-button :disabled="requirementsSaving" @click="resetRequirements">恢复个人默认</el-button><el-button :disabled="requirementsSaving" @click="requirementsOpen=false">取消</el-button><el-button type="primary" :loading="requirementsSaving" :disabled="running" @click="saveRequirements">应用到当前对话</el-button></template>
+    </el-dialog>
     <Transition name="veil"
       ><button
         v-if="rightOpen"
@@ -772,216 +727,126 @@ function validatePackage(value: ProductionPackage) {
       <div class="workspace-content">
         <header class="right-heading">
           <h2>工作区</h2>
+          <div class="workspace-heading-actions" role="group" aria-label="工作区操作">
+          <button class="icon-button" aria-label="清空执行记录" title="清空执行记录" :disabled="(!tools.length && !sources.length) || clearingExecutions" @click="clearExecutions"><PhTrash :size="19" /></button>
+          <el-button
+            v-if="conversation"
+            text
+            circle
+            :icon="Refresh"
+            aria-label="刷新执行记录"
+            title="刷新执行记录"
+            @click="state.refresh()"
+          />
           <el-button
             text
             circle
             :icon="Close"
             aria-label="收起工作区"
+            title="收起工作区"
             @click="rightOpen = false"
           />
+          </div>
         </header>
-        <el-tabs v-model="rightTab" class="right-tabs"
-          ><el-tab-pane label="执行" name="execution"
-            ><div class="execution-header">
-              <span class="execution-status" :class="{ running }"
-                ><i></i>{{ statusText }}</span
-              ><el-button
-                v-if="conversation"
-                text
-                circle
-                :icon="Refresh"
-                aria-label="刷新执行状态"
-                @click="state.refresh()"
-              />
+        <div class="workspace-feed">
+          <el-alert
+            v-if="streamError"
+            title="连接正在恢复"
+            type="warning"
+            :closable="false"
+          />
+          <article
+            v-for="tool in tools"
+            :key="tool.id"
+            class="workspace-tool-card"
+            :class="tool.status.toLowerCase()"
+          >
+            <div class="workspace-tool-line">
+              <span class="workspace-tool-state"
+                ><el-icon v-if="tool.status === 'RUNNING'" class="is-loading"
+                  ><Loading /></el-icon
+                ><el-icon v-else-if="tool.status === 'COMPLETED'"
+                  ><Check /></el-icon
+                ><el-icon v-else><Close /></el-icon></span
+              ><strong>{{ toolLabels[tool.tool] || "执行操作" }}</strong
+              ><span v-if="tool.durationMs != null" class="tool-duration">{{
+                durationText(tool.durationMs)
+              }}</span>
             </div>
-            <el-alert
-              v-if="streamError"
-              title="实时连接重连中，已启用自动刷新。"
-              type="warning"
-              show-icon
-              :closable="false" />
-            <div v-if="tools.length" class="tool-timeline">
-              <article
-                v-for="tool in tools"
-                :key="tool.id"
-                class="tool-entry"
-                :class="tool.status.toLowerCase()"
-              >
-                <span class="tool-state"
-                  ><el-icon v-if="tool.status === 'RUNNING'" class="is-loading"
-                    ><Loading /></el-icon
-                  ><el-icon v-else-if="tool.status === 'COMPLETED'"
-                    ><Check /></el-icon
-                  ><el-icon v-else><Close /></el-icon
-                ></span>
-                <div>
-                  <h3>{{ toolLabels[tool.tool] || "执行操作" }}</h3>
-                  <p v-if="tool.message" class="tool-failure">
-                    {{ tool.message }}
-                  </p>
-                  <span v-if="tool.durationMs != null" class="tool-duration">{{
-                    durationText(tool.durationMs)
-                  }}</span>
-                  <router-link
-                    v-if="
-                      tool.tool === 'save_knowledge' &&
-                      tool.status === 'COMPLETED'
-                    "
-                    class="knowledge-tool-link"
-                    :to="{
-                      path: '/knowledge',
-                      query: {
-                        document: String(
-                          (tool.output as Record<string, unknown>)
-                            ?.documentId || '',
-                        ),
-                      },
-                    }"
-                    >查看资料</router-link
-                  >
-                  <AnimatedDisclosure
-                    v-if="
-                      toolSummary(tool.tool, tool.input, tool.output).length
-                    "
-                  >
-                    <template #summary>查看详情</template>
-                    <dl class="tool-summary">
-                      <template
-                        v-for="(row, index) in toolSummary(
-                          tool.tool,
-                          tool.input,
-                          tool.output,
-                        )"
-                        :key="index"
-                        ><dt>{{ row.label }}</dt>
-                        <dd>{{ row.value }}</dd></template
-                      >
-                    </dl>
-                  </AnimatedDisclosure>
-                </div>
-              </article>
-            </div>
-            <div v-else class="right-empty">
-              <el-icon><Operation /></el-icon>
-              <p>暂无执行记录</p>
-            </div>
-            <AnimatedDisclosure
-              v-if="conversation?.brief.topic"
-              class="brief-details"
-              open
+            <p v-if="tool.message" class="tool-failure">{{ tool.message }}</p>
+            <router-link
+              v-if="
+                tool.tool === 'save_knowledge' && tool.status === 'COMPLETED'
+              "
+              class="knowledge-tool-link"
+              :to="{
+                path: '/knowledge',
+                query: {
+                  document: String(
+                    (tool.output as Record<string, unknown>)?.documentId || '',
+                  ),
+                },
+              }"
+              >查看资料</router-link
             >
-              <template #summary>创意简报</template>
-              <dl>
-                <template v-for="row in briefRows" :key="row.key"
-                  ><dt>{{ row.label }}</dt>
-                  <dd>{{ row.value }}</dd></template
-                >
-              </dl>
+            <AnimatedDisclosure><template #summary>查看详情</template>
+              <section v-for="(call,index) in tool.calls" :key="call.id" class="tool-call-detail">
+                <header v-if="tool.calls.length>1"><span>第 {{index+1}} 次</span><span>{{({RUNNING:'执行中',COMPLETED:'已完成',FAILED:'失败',STOPPED:'已停止'})[call.status as 'RUNNING'|'COMPLETED'|'FAILED'|'STOPPED']}}</span></header>
+                <p v-if="call.message" class="tool-failure">{{call.message}}</p>
+                <dl class="tool-summary"><template v-for="(row,index) in toolSummary(call.tool,call.input,call.output)" :key="index"><dt>{{row.label}}</dt><dd>{{row.value}}</dd></template></dl>
+              </section>
             </AnimatedDisclosure>
-            <section v-if="artifact" class="artifact-shortcuts">
-              <header>
-                <h3>制作方案</h3>
-                <span>V{{ artifact.versionNumber }}</span
-                ><el-button text @click="openArtifact()">展开</el-button>
-              </header>
-              <button
-                v-for="(label, section) in {
-                  timeline: '脚本与分镜',
-                  shooting: '拍摄方案',
-                  voice: '配音方案',
-                  editing: '剪辑方案',
-                  plan: '内容策划',
-                }"
-                :key="section"
-                @click="openArtifact(false, section)"
-              >
-                <el-icon><Document /></el-icon><span>{{ label }}</span
-                ><el-icon><Expand /></el-icon>
-              </button></section></el-tab-pane
-          ><el-tab-pane label="作品" name="artifact"
-            ><template v-if="artifact"
-              ><div class="artifact-heading">
-                <span class="artifact-state"
-                  >{{ artifact.status === "FINAL" ? "已定稿" : "草稿" }} · V{{
-                    artifact.versionNumber
-                  }}</span
-                ><el-button text :icon="Expand" @click="openArtifact()"
-                  >展开</el-button
-                >
-              </div>
-              <ProductionDocument :model-value="artifact.content" compact />
-              <div class="artifact-actions">
-                <el-button
-                  :icon="EditPen"
-                  :disabled="running"
-                  @click="openArtifact(true)"
-                  >编辑</el-button
-                ><el-button :disabled="!versions.length" @click="showVersions"
-                  >版本</el-button
-                ><el-dropdown @command="download"
-                  ><el-button :icon="Download">导出</el-button
-                  ><template #dropdown
-                    ><el-dropdown-menu
-                      ><el-dropdown-item command="markdown"
-                        >Markdown</el-dropdown-item
-                      ><el-dropdown-item command="txt"
-                        >TXT 文本</el-dropdown-item
-                      ></el-dropdown-menu
-                    ></template
-                  ></el-dropdown
-                ><el-button
-                  v-if="artifact.status !== 'FINAL'"
-                  type="primary"
-                  plain
-                  :disabled="running"
-                  @click="finalize"
-                  >定稿</el-button
-                >
-              </div></template
+          </article>
+          <NewsSourceCard
+            v-for="source in sources"
+            :key="source.chunkId"
+            :source="source"
+            compact
+          />
+          <article v-if="artifact" class="workspace-work-card">
+            <span class="work-status"
+              >{{ artifact.status === "FINAL" ? "已定稿" : "草稿" }} · V{{
+                artifact.versionNumber
+              }}</span
+            ><router-link :to="'/works/' + conversation!.id"
+              ><h3>{{ artifact.title }}</h3></router-link
             >
-            <div v-else class="right-empty">
-              <el-icon><Document /></el-icon>
-              <p>暂无作品</p>
-            </div></el-tab-pane
-          ><el-tab-pane label="资料" name="sources"
-            ><div
-              v-for="(source, index) in sources"
-              :key="`${source.chunkId}-${index}`"
-              class="conversation-source"
-            >
-              <h3>{{ source.documentName }}</h3>
-              <el-tag
-                effect="plain"
-                :type="
-                  artifact?.sources.some(
-                    (item) => item.chunkId === source.chunkId,
-                  )
-                    ? 'success'
-                    : 'info'
-                "
-                >{{
-                  artifact?.sources.some(
-                    (item) => item.chunkId === source.chunkId,
-                  )
-                    ? "已引用"
-                    : "检索结果"
-                }}</el-tag
-              >
-              <p>{{ source.text }}</p>
-              <a
-                v-if="safeUrl(source.sourceUrl)"
-                :href="safeUrl(source.sourceUrl)"
-                target="_blank"
-                rel="noopener noreferrer"
-                ><el-icon><LinkIcon /></el-icon>来源</a
+            <p>{{ artifact.content.summary }}</p>
+            <div class="workspace-work-actions">
+              <el-button @click="router.push('/works/' + conversation!.id)"
+                >查看作品</el-button
+              ><el-button
+                :disabled="running"
+                @click="router.push('/works/' + conversation!.id + '?edit=1')"
+                >修改</el-button
+              ><el-button
+                v-if="artifact.status !== 'FINAL'"
+                text
+                :disabled="running"
+                @click="finalize"
+                >定稿</el-button
               >
             </div>
-            <div v-if="!sources.length" class="right-empty">
-              <el-icon><Document /></el-icon>
-              <p>暂无引用资料</p>
-            </div></el-tab-pane
-          ></el-tabs
-        >
+          </article>
+          <AnimatedDisclosure
+            v-if="conversation?.brief.topic"
+            class="workspace-brief"
+            ><template #summary>创作要求</template>
+            <dl class="tool-summary">
+              <template v-for="row in briefRows" :key="row.key"
+                ><dt>{{ row.label }}</dt>
+                <dd>{{ row.value }}</dd></template
+              >
+            </dl></AnimatedDisclosure
+          >
+          <div
+            v-if="!tools.length && !sources.length && !artifact"
+            class="right-empty"
+          >
+            <el-icon><Operation /></el-icon>
+            <p>暂无执行记录</p>
+          </div>
+        </div>
       </div>
     </aside>
     <el-drawer
@@ -1026,10 +891,11 @@ function validatePackage(value: ProductionPackage) {
           >
         </div>
       </div>
-      <ProductionDocument
+      <ProductionCanvas
         v-if="draft"
         v-model="draft"
         :initial-tab="artifactSection"
+        @revise="async () => { if (await confirmLeave()) { artifactOpen = false; await router.push('/works/' + conversation!.id + '?edit=1'); } }"
         :editable="editorActive" /></el-drawer
     ><el-dialog
       v-model="versionsOpen"

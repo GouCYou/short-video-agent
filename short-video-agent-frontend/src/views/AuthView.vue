@@ -8,6 +8,7 @@ const register = ref(false),
   username = ref(""),
   password = ref(""),
   nickname = ref(""),
+  email = ref(""),
   busy = ref(false),
   error = ref("");
 const route = useRoute(),
@@ -17,7 +18,7 @@ const canSubmit = computed(
   () =>
     username.value.trim().length >= 3 &&
     (register.value ? password.value.length >= 8 : password.value.length > 0) &&
-    (!register.value || !!nickname.value.trim()),
+    (!register.value || (!!nickname.value.trim() && email.value.trim().length<=254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.value.trim()))),
 );
 async function submit() {
   if (!canSubmit.value) return;
@@ -29,6 +30,7 @@ async function submit() {
           username.value.trim(),
           password.value,
           nickname.value.trim(),
+          email.value.trim().toLowerCase(),
         )
       : await api.login(username.value.trim(), password.value);
     auth.accept(session);
@@ -95,6 +97,7 @@ function toggle() {
               maxlength="32"
               size="large"
               required /></el-form-item
+          ><el-form-item v-if="register" label="邮箱"><el-input v-model="email" type="email" autocomplete="email" placeholder="输入邮箱地址" maxlength="254" size="large" required /></el-form-item
           ><el-form-item label="密码"
             ><el-input
               v-model="password"

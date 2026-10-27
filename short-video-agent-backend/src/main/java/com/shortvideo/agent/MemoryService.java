@@ -71,12 +71,13 @@ class MemoryService {
     var checked = new ArrayList<Map<String, Object>>();
     for (Object item : (List<?>) items) {
       var entry = Json.map(item);
-      checked.add(
-          Map.of(
-              "text",
-              Json.required(entry, "text", 500),
-              "evidence",
-              Json.optional(entry, "evidence", "用户编辑", 500)));
+      String text=Json.required(entry,"text",500), evidence=Json.optional(entry,"evidence","用户编辑",500);
+      var old=((List<?>)current.get("items")).stream().map(Json::map)
+          .filter(i->text.equals(i.get("text")) && evidence.equals(i.get("evidence"))).findFirst();
+      var saved=new LinkedHashMap<String,Object>(Map.of("text",text,"evidence",evidence));
+      if(old.isPresent()) saved.putAll(old.get());
+      else saved.put("manual",true);
+      checked.add(saved);
     }
     tx.executeWithoutResult(
         s -> {
@@ -96,6 +97,7 @@ class MemoryService {
     String user = auth.current().id();
     tx.executeWithoutResult(
         s -> {
+          db.query("SELECT id FROM conversations WHERE user_id=? ORDER BY id FOR UPDATE",(rs,n)->rs.getString(1),user);
           ensure(user);
           db.update(
               "UPDATE user_memories SET"
@@ -118,6 +120,31 @@ class MemoryService {
             + " FROM user_memories WHERE user_id=?)",
         user,
         user);
+  }
+
+  private List<String> origins(String user, Map<String,Object> item) {
+    if(Boolean.TRUE.equals(item.get("manual")) || "用户编辑".equals(item.get("evidence"))) return List.of();
+    if(item.get("conversationIds") instanceof List<?> list) return list.stream().map(Object::toString).toList();
+    String evidence=Objects.toString(item.get("evidence"),"");
+    if(evidence.isBlank()) return List.of();
+    // Backfill provenance for older extracted items from literal user evidence.
+    return db.query("SELECT DISTINCT m.conversation_id FROM conversation_messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.user_id=? AND m.role='user' AND LOCATE(?,m.content)>0",(rs,n)->rs.getString(1),user,evidence);
+  }
+
+  void forgetConversation(String id) {
+    String user=db.queryForObject("SELECT user_id FROM conversations WHERE id=?",String.class,id);
+    ensure(user);
+    db.query("SELECT user_id FROM user_memories WHERE user_id=? FOR UPDATE",(rs,n)->rs.getString(1),user);
+    var kept=new ArrayList<Map<String,Object>>();
+    for(Object value:(List<?>)profile(user).get("items")) {
+      var item=new LinkedHashMap<String,Object>(Json.map(value));
+      var original=origins(user,item);
+      var remaining=original.stream().filter(source->!source.equals(id)).toList();
+      if(!original.contains(id)) { kept.add(item); continue; }
+      if(!remaining.isEmpty()) {item.put("conversationIds",remaining);kept.add(item);}
+    }
+    db.update("UPDATE user_memories SET profile_json=?,revision=revision+1,updated_at=CURRENT_TIMESTAMP(6) WHERE user_id=?",json.write(kept),user);
+    db.update("UPDATE conversations SET summary_text=NULL,memory_version=(SELECT COUNT(*) FROM agent_runs r WHERE r.conversation_id=conversations.id AND r.status='COMPLETED') WHERE id=?",id);
   }
 
   Map<String, Object> context(String conversation) {
@@ -241,10 +268,23 @@ class MemoryService {
         if ((quoted || existing)
             && newItems.size() < 30
             && !(text + evidence).matches("(?s).*sk-[A-Za-z0-9_-]{8,}.*"))
-          newItems.add(Map.of("text", text, "evidence", evidence));
+          {
+            var saved=new LinkedHashMap<String,Object>(Map.of("text",text,"evidence",evidence));
+            var old=((List<?>)p.get("items")).stream().map(Json::map)
+                .filter(i->text.equals(i.get("text")) && evidence.equals(i.get("evidence"))).findFirst();
+            var sources=new LinkedHashSet<String>();
+            if(old.isPresent()) { saved.putAll(old.get()); sources.addAll(origins(user,old.get())); }
+            if(quoted && !Boolean.TRUE.equals(saved.get("manual"))) sources.add(id);
+            if(!sources.isEmpty()) saved.put("conversationIds",new ArrayList<>(sources));
+            newItems.add(saved);
+          }
       }
     tx.executeWithoutResult(
         s -> {
+          var current=db.query("SELECT status FROM conversations WHERE id=? FOR UPDATE",(rs,n)->rs.getString(1),id);
+          if(current.isEmpty() || current.getFirst().equals("RUNNING")) return;
+          Integer turns=db.queryForObject("SELECT COUNT(*) FROM agent_runs WHERE conversation_id=? AND status='COMPLETED'",Integer.class,id);
+          if(!Objects.equals(turns,c.get("turns"))) return;
           // A cleared or edited profile invalidates any extraction already in flight.
           if (!profile(user).get("revision").equals(p.get("revision"))) return;
           ensure(user);
