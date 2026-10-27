@@ -75,6 +75,32 @@ class ControllerTests(unittest.TestCase):
             runner.menu()
         self.assertIn('5178 已占用', output.getvalue())
 
+    def test_refresh_clears_previous_menu_and_cancel_does_not_mutate_services(self):
+        with patch.object(runner, 'config', return_value=self.env), \
+                patch.object(runner, 'alive', return_value=None), patch.object(runner, 'tcp', return_value=False), \
+                patch.object(runner, 'lan_ipv4', return_value=None), patch.object(runner, 'status'), \
+                patch.object(runner, 'clear_menu_screen') as clear, patch.object(runner, 'perform') as perform, \
+                patch.object(runner, 'read_menu_choice', side_effect=['2','4']), contextlib.redirect_stdout(io.StringIO()):
+            runner.menu()
+        self.assertEqual(clear.call_count,2)
+        perform.assert_not_called()
+
+    def test_clear_menu_erases_viewport_scrollback_and_resets_cursor(self):
+        output=io.StringIO()
+        with patch.object(runner.sys, 'stdout', output), patch.object(output, 'isatty', return_value=True), \
+                patch.object(runner, 'enable_ansi', return_value=True):
+            runner.clear_menu_screen()
+        self.assertEqual(output.getvalue(),'\033[3J\033[2J\033[H')
+
+    def test_noninteractive_output_is_not_cleared_or_paused(self):
+        with contextlib.redirect_stdout(io.StringIO()) as output, \
+                patch.object(runner, 'read_key') as read, patch.object(runner.subprocess, 'run') as execute:
+            runner.clear_menu_screen()
+            runner.wait_for_menu_return()
+        self.assertEqual(output.getvalue(),'')
+        read.assert_not_called()
+        execute.assert_not_called()
+
     def test_arrow_navigation_numbers_and_enter(self):
         options = ['启动', '刷新', '日志', '取消']
         for keys, expected in [(['RIGHT', 'ENTER'], '2'), (['DOWN', 'DOWN', 'ENTER'], '3'),

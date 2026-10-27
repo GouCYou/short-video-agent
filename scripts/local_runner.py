@@ -767,12 +767,32 @@ def read_menu_choice(options, key_reader=None):
                 selected = int(key) - 1
 
 
+def clear_menu_screen():
+    if not sys.stdout.isatty():
+        return
+    if enable_ansi():
+        # Clear scrollback as well as the viewport, then redraw from the top.
+        sys.stdout.write('\033[3J\033[2J\033[H')
+        sys.stdout.flush()
+    elif IS_WINDOWS:
+        subprocess.run([os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', 'cls'], check=False)
+
+
+def wait_for_menu_return():
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return
+    print(paint('\n按任意键返回菜单'), flush=True)
+    with keyboard_mode():
+        read_key()
+
+
 def menu(demo=False):
     attempted_mutation = False
     while True:
         env = config(initialize=False)
-        print(paint('\n知映 · 本地服务\n', '1;32'))
         snapshot = collect_status(env)
+        clear_menu_screen()
+        print(paint('知映 · 本地服务\n', '1;32'))
         status(env, snapshot)
         running = sum(bool(owner) for owner in snapshot['owners'].values())
         listening = any(snapshot['endpoints'][('127.0.0.1', port)] for port in snapshot['ports'].values())
@@ -786,15 +806,20 @@ def menu(demo=False):
         try:
             if choice == '1':
                 attempted_mutation = True
+                clear_menu_screen()
                 perform('stop' if running else 'start', demo=demo)
+                wait_for_menu_return()
             elif choice == '2':
                 continue
             elif choice == '3':
+                clear_menu_screen()
                 show_logs(env)
+                wait_for_menu_return()
             else:
                 print('请输入 1、2、3 或 4。')
         except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as error:
             print('\n操作失败：' + redact(str(error), env), file=sys.stderr, flush=True)
+            wait_for_menu_return()
 
 
 def main():
