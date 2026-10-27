@@ -1,3 +1,4 @@
+:; exec bash "$(dirname "$0")/run.sh" "$@"; exit $?
 @echo off
 setlocal
 chcp 65001 >nul
