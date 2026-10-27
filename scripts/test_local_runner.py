@@ -1,5 +1,6 @@
 """Controller regressions. All service mutations and downloads are mocked."""
 import contextlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -244,6 +245,18 @@ class ControllerTests(unittest.TestCase):
             runner.resident('Redis', '127.0.0.1', '6379', 'redis', self.env)
         execute.assert_not_called()
 
+    def test_mac_resident_starts_installed_mysql84_instead_of_missing_mysql80(self):
+        (self.root/'opt/mysql@8.4/bin').mkdir(parents=True)
+        (self.root/'opt/mysql@8.4/bin/mysqld').touch()
+        prefix=subprocess.CompletedProcess([],0,stdout=str(self.root)+'\n')
+        started=subprocess.CompletedProcess([],0,stdout=b'',stderr=b'')
+        with patch.object(runner,'IS_WINDOWS',False), patch.object(runner.platform,'system',return_value='Darwin'), \
+                patch.object(runner,'tcp',side_effect=[False,True]), patch.object(runner,'require',return_value='brew'), \
+                patch.object(runner.subprocess,'run',side_effect=[prefix,started]) as execute,contextlib.redirect_stdout(io.StringIO()):
+            runner.resident('MySQL','127.0.0.1','3306','mysql@8.0',self.env)
+        self.assertEqual(Path(execute.call_args.args[0][0]).name,'brew')
+        self.assertEqual(execute.call_args.args[0][1:],['services','start','mysql@8.4'])
+
     def test_windows_resident_auto_detection_and_start(self):
         query = subprocess.CompletedProcess([], 0, stdout='"MySQL80"', stderr='')
         started = subprocess.CompletedProcess([], 0, stdout=b'', stderr=b'')
@@ -340,9 +353,14 @@ class ControllerTests(unittest.TestCase):
         binary_dir.mkdir(parents=True)
         with zipfile.ZipFile(binary_dir / 'qdrant.zip', 'w') as archive:
             archive.writestr('qdrant.exe', b'test fixture, not executable')
+        payload = (binary_dir / 'qdrant.zip').read_bytes()
+        def downloaded(*args, **kwargs):
+            (binary_dir / 'qdrant.zip').write_bytes(payload)
+            return subprocess.CompletedProcess([], 0)
         with patch.object(runner, 'IS_WINDOWS', True), patch.object(runner.platform, 'machine', return_value='AMD64'), \
+                patch.dict(runner.QDRANT_SHA256, {'x86_64-pc-windows-msvc':hashlib.sha256(payload).hexdigest()}), \
                 patch.object(runner.shutil, 'which', return_value=None), patch.object(runner, 'require', return_value='curl.exe'), \
-                patch.object(runner.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as download, contextlib.redirect_stdout(io.StringIO()):
+                patch.object(runner.subprocess, 'run', side_effect=downloaded) as download, contextlib.redirect_stdout(io.StringIO()):
             path = runner.qdrant_bin({})
         self.assertEqual(path.name, 'qdrant.exe')
         self.assertIn('qdrant-x86_64-pc-windows-msvc.zip', download.call_args.args[0][-3])
@@ -360,6 +378,39 @@ class ControllerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'Java 后端 启动失败：java executable missing'):
                 runner.spawn('backend', ['java', '-jar', 'backend.jar'], self.env, self.root)
 
+    def test_qdrant_rejects_tampered_proxy_and_falls_back_to_verified_official(self):
+        package=io.BytesIO()
+        with zipfile.ZipFile(package,'w') as archive:
+            archive.writestr('qdrant.exe',b'verified fixture')
+        payload=package.getvalue();urls=[]
+        def download(argv,**kwargs):
+            urls.append(argv[-3])
+            Path(argv[-1]).write_bytes(b'invalid proxy response' if len(urls)==1 else payload)
+            return subprocess.CompletedProcess([],0)
+        self.state.mkdir(parents=True)
+        with patch.object(runner,'IS_WINDOWS',True), patch.object(runner.platform,'machine',return_value='AMD64'), \
+                patch.object(runner.shutil,'which',return_value=None), patch.object(runner,'require',return_value='curl'), \
+                patch.dict(runner.QDRANT_SHA256,{'x86_64-pc-windows-msvc':hashlib.sha256(payload).hexdigest()}), \
+                patch.object(runner.subprocess,'run',side_effect=download),contextlib.redirect_stdout(io.StringIO()):
+            result=runner.qdrant_bin({})
+        self.assertTrue(urls[0].startswith('https://ghfast.top/https://github.com/'))
+        self.assertTrue(urls[1].startswith('https://github.com/'))
+        self.assertEqual(result.read_bytes(),b'verified fixture')
+        self.assertFalse((self.state/'bin/qdrant.zip').exists())
+
+    def test_mirror_install_falls_back_without_global_configuration(self):
+        with patch.object(runner,'run',side_effect=[RuntimeError('unavailable'),None]) as execute, contextlib.redirect_stdout(io.StringIO()):
+            runner.mirror_install('npm',['npm','ci','--registry=https://registry.npmmirror.com'],['npm','ci','--registry=https://registry.npmjs.org'],self.root)
+        self.assertEqual(execute.call_count,2)
+        self.assertIn('registry.npmjs.org',execute.call_args.args[0][-1])
+        self.assertFalse((self.root/'.npmrc').exists())
+
+    def test_maven_mirror_only_overrides_central_and_escapes_url(self):
+        path=runner.maven_settings('https://maven.aliyun.com/repository/public?a=1&b=2')
+        self.assertIn('<mirrorOf>central</mirrorOf>',path.read_text())
+        self.assertIn('&amp;',path.read_text())
+        self.assertNotIn('<mirror>',runner.maven_settings().read_text())
+
     def test_corrupt_windows_package_does_not_leave_a_cached_executable(self):
         (self.state / 'bin').mkdir(parents=True)
         archive = self.state / 'bin/qdrant.zip'
@@ -367,7 +418,7 @@ class ControllerTests(unittest.TestCase):
         with patch.object(runner, 'IS_WINDOWS', True), patch.object(runner.platform, 'machine', return_value='AMD64'), \
                 patch.object(runner.shutil, 'which', return_value=None), patch.object(runner, 'require', return_value='curl.exe'), \
                 patch.object(runner.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)), contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaisesRegex(RuntimeError, '安装包解压失败'):
+            with self.assertRaisesRegex(RuntimeError, '下载或校验失败'):
                 runner.qdrant_bin({})
         self.assertFalse(archive.exists())
         self.assertFalse((self.state / 'bin/qdrant.exe').exists())

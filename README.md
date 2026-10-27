@@ -33,9 +33,22 @@ docs/                        架构、接口、配置与测试说明
 bash run.sh
 ```
 
-Windows 双击根目录 `run.bat`，或在终端执行 `run.bat`。两个入口均先检测服务状态并显示本地访问地址，支持上下/左右方向键选择、回车确认，也可输入编号：1 启动或停止项目、2 刷新状态、3 查看日志、4 取消退出。打开菜单不会自动启动或停止任何服务。
+macOS 首次使用可双击根目录 **`setup-mac.command`**，或执行 `bash run.sh setup`，安装缺少的环境后打开服务菜单。直接运行 `bash run.sh` 也会检测环境，缺失时提供一键安装选项。`bash run.sh check-env` 仅检查，不安装或启动服务。
+
+安装器支持 Apple Silicon / Intel：Python 3.12、OpenJDK 21、Node.js 24、MySQL 8.4、Redis、Maven；已有兼容环境会复用，已有 MySQL 8.0 不会升级到 8.4。没有 Homebrew 时自动安装 Homebrew，清华镜像优先、官方源回退。首次安装可能需要输入 Mac 登录密码，或在 Apple 弹窗中完成命令行工具安装，脚本会等待完成后继续。版本分支固定，补丁版本由 Homebrew 提供。
+
+环境路径只在项目脚本内生效，不改 shell 配置，也不强制替换系统默认 Java、Node 或 Python。环境安装不启动数据库；从菜单选择启动项目时才启用 MySQL、Redis。已有数据库密码保留，需在 `.env.local` 配置正确账号。
+
+Windows 双击根目录 `run.bat`，或在终端执行 `run.bat`。两个入口均先检测服务状态并显示本地访问地址，支持上下/左右方向键选择、回车确认，也可输入编号：1 启动或停止项目、2 刷新状态、3 查看日志、4 取消退出、5 环境与依赖详情；macOS 另有 6 安装 / 修复运行环境。打开菜单不会自动启动或停止任何服务。
+
+菜单默认分开展示服务状态、运行环境汇总、项目依赖汇总，缺失或不兼容项单独标出；详情页展示各软件版本与路径。启动前会重新校验环境。启动与安装过程中顶部固定显示汇总，下方滚动显示最新安装日志，完整输出保存在 `.runtime/local/install.log`。
 
 确认启动后才安装所需依赖、构建并生成缺失的 `.env.local`。MySQL、Redis 未运行时尝试启动已安装的系统服务；停止项目时保持这两个常驻服务运行。前后端启动失败会显示原因、日志位置与最近日志。本机数据库账户与端口在 `.env.local` 配置。
+
+本地脚本默认优先使用 npmmirror（npm）、清华 PyPI、阿里云 Maven；安装失败会回退官方源。配置仅作用于本次安装，Maven 临时设置保存在 `.runtime/local/`，不会修改全局源。Qdrant 1.15.5 优先通过 `ghfast.top` 加速下载，再回退 GitHub，解压前核对官方发布的 SHA-256；不再连续重复请求同一个失效地址。
+
+可在 `.env.local` 覆盖 `LOCAL_NPM_REGISTRY`、`LOCAL_PIP_INDEX_URL`、`LOCAL_MAVEN_MIRROR`、`LOCAL_GITHUB_PROXY`。将 `LOCAL_GITHUB_PROXY` 留空可直连 GitHub；已有离线包可通过 `LOCAL_QDRANT_BIN` 指定可执行文件路径。镜像选择不会触发已缓存依赖的重新安装。
+
 
 ```sh
 bash run.sh start --demo

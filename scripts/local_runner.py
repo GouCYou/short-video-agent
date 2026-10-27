@@ -22,17 +22,47 @@ import urllib.error
 import urllib.request
 import unicodedata
 import zipfile
+import codecs
+from collections import deque
+from xml.sax.saxutils import escape as xml_escape
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / '.runtime' / 'local'
 APP_ORDER = ('qdrant', 'ai', 'backend', 'frontend')
 IS_WINDOWS = os.name == 'nt'
 COLOR = False
+INSTALL_OUTPUT = None
 LABELS = {'qdrant': 'Qdrant', 'ai': 'Python AI', 'backend': 'Java 后端', 'frontend': 'Vue 前端'}
 DEFAULTS = {'LOCAL_DB_HOST': '127.0.0.1', 'LOCAL_DB_PORT': '3306',
             'LOCAL_REDIS_HOST': '127.0.0.1', 'LOCAL_REDIS_PORT': '6379',
             'LOCAL_QDRANT_PORT': '16333', 'LOCAL_QDRANT_GRPC_PORT': '16334',
             'LOCAL_AI_PORT': '18000', 'LOCAL_BACKEND_PORT': '18080', 'LOCAL_FRONTEND_PORT': '5178'}
+
+# GitHub release asset digests for Qdrant v1.15.5.
+QDRANT_SHA256 = {
+ 'aarch64-apple-darwin': 'e712f362e1e9aff18bb062f15c05fa384282ededc7d49f1935792cdc64e25222',
+ 'aarch64-unknown-linux-musl': '9a68ff1b158fd3a73b63e5e07a80c3bef95c869436a946151246b10b4a85bcd4',
+ 'x86_64-apple-darwin': 'b25f5512f2b696bae84752ff50752a77eec2ce6955e00847816e05c6344d6af9',
+ 'x86_64-pc-windows-msvc': 'feaeb25c1d2a17fb787f9053de0fa9732bab74ff7e580135fd49e796a889ab91',
+ 'x86_64-unknown-linux-musl': 'a6d36c60efda2872494f44b727796c811c3e9f307a2dd9c0054ee43d995d14ad',
+}
+
+
+def mirror_install(label, preferred, official, cwd):
+    try:
+        run(preferred, cwd=cwd)
+    except RuntimeError:
+        print(f'{label} 镜像安装未成功，切换官方源 …', flush=True)
+        run(official, cwd=cwd)
+
+
+def maven_settings(url=None):
+    STATE.mkdir(parents=True, exist_ok=True)
+    path = STATE / ('maven-cn.xml' if url else 'maven-official.xml')
+    mirrors = ('<mirror><id>local-cn-central</id><mirrorOf>central</mirrorOf>'
+               f'<url>{xml_escape(url)}</url></mirror>') if url else ''
+    path.write_text(f'<settings><mirrors>{mirrors}</mirrors></settings>', encoding='utf-8')
+    return path
 
 
 def read_env(path):
@@ -118,11 +148,101 @@ def command_line(argv):
 
 
 def run(argv, cwd=ROOT, env=None, quiet=False):
+    if INSTALL_OUTPUT is not None and not quiet:
+        process = subprocess.Popen(command_line(argv), cwd=cwd, env=env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+        try:
+            while True:
+                chunk = os.read(process.stdout.fileno(), 4096)
+                if not chunk: break
+                INSTALL_OUTPUT.write(decoder.decode(chunk))
+            INSTALL_OUTPUT.write(decoder.decode(b'',final=True))
+            code=process.wait()
+        except BaseException:
+            process.terminate()
+            try: process.wait(timeout=5)
+            except subprocess.TimeoutExpired: process.kill(); process.wait()
+            raise
+        finally:
+            process.stdout.close()
+        if code: raise RuntimeError(f'{Path(str(argv[0])).name} 执行失败，退出码 {code}；详情见 {INSTALL_OUTPUT.log_path}')
+        return
     result = subprocess.run(command_line(argv), cwd=cwd, env=env,
                             stdout=subprocess.DEVNULL if quiet else None,
                             stderr=subprocess.DEVNULL if quiet else None)
     if result.returncode:
         raise RuntimeError(f'{Path(str(argv[0])).name} 执行失败，请检查以上信息')
+
+
+def fit_terminal(text,width):
+    result='';used=0
+    for char in text:
+        size=2 if unicodedata.east_asian_width(char) in ('W','F') else 1
+        if used+size>width: break
+        result+=char;used+=size
+    return result
+
+
+class InstallationOutput:
+    """Keep a compact status header visible while streaming and recording logs."""
+    def __init__(self,env,environment,dependencies):
+        self.original=sys.stdout;self.env=env
+        self.environment=environment;self.dependencies=dependencies
+        self.lines=deque(maxlen=100);self.pending='';self.last_draw=0
+        self.ansi=enable_ansi();self.log_path=STATE/'install.log'
+        STATE.mkdir(parents=True,exist_ok=True)
+        self.log=self.log_path.open('a',encoding='utf-8')
+        if not IS_WINDOWS:self.log_path.chmod(0o600)
+        self.log.write('\n--- '+time.strftime('%Y-%m-%d %H:%M:%S')+' ---\n');self.log.flush()
+    def write(self,text):
+        if not text:return 0
+        clean=redact(re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',str(text)),self.env)
+        clean=''.join(c for c in clean if c in '\n\r\t' or ord(c)>=32)
+        self.log.write(clean);self.log.flush()
+        if not self.ansi:self.original.write(clean);self.original.flush();return len(text)
+        pieces=(self.pending+clean.replace('\r','\n')).split('\n')
+        self.lines.extend(pieces[:-1]);self.pending=pieces[-1][-2000:]
+        self.draw()
+        return len(text)
+    def draw(self,force=False):
+        if not self.ansi:return
+        now=time.monotonic()
+        if not force and now-self.last_draw<0.1:return
+        self.last_draw=now
+        width,height=shutil.get_terminal_size((100,30));width=max(20,width-2)
+        ready=sum(r['state']=='已安装' for r in self.environment)
+        header=['知映 · 启动与安装',f'运行环境  {ready}/{len(self.environment)} 项可用',
+                '项目依赖  '+' · '.join(r['label']+' '+r['state'] for r in self.dependencies),
+                '日志  '+str(self.log_path),'─'*width]
+        logs=list(self.lines)+([self.pending] if self.pending else [])
+        logs=logs[-max(1,height-len(header)-2):]
+        frame='\033[H\033[2J'+'\n'.join([paint(fit_terminal(line,width),'1;32') for line in header]+[fit_terminal(line,width) for line in logs])
+        self.original.write(frame);self.original.flush()
+    def flush(self):
+        self.log.flush();self.original.flush()
+    def isatty(self):return self.original.isatty()
+    def fileno(self):return self.original.fileno()
+    def close(self):
+        self.draw(force=True)
+        if self.ansi:self.original.write('\n');self.original.flush()
+        self.log.close()
+
+
+@contextmanager
+def installation_display(env,environment,dependencies):
+    global INSTALL_OUTPUT
+    output=InstallationOutput(env,environment,dependencies)
+    previous=sys.stdout;previous_output=INSTALL_OUTPUT
+    INSTALL_OUTPUT=output;sys.stdout=output
+    try:
+        output.draw(force=True)
+        yield output
+    except BaseException as error:
+        output.write('\n'+('操作已取消' if isinstance(error,KeyboardInterrupt) else '操作失败：'+str(error))+'\n')
+        raise
+    finally:
+        sys.stdout=previous;INSTALL_OUTPUT=previous_output;output.close()
 
 
 def record_path(name):
@@ -246,6 +366,8 @@ def spawn(name, argv, env, cwd):
 
 
 def wait_http(name, url, seconds=90, env=None):
+    if INSTALL_OUTPUT is not None:
+        print(f'等待 {LABELS[name]} 启动 …',flush=True)
     deadline = time.monotonic() + seconds
     last_error = '健康检查未返回 HTTP 200'
     while time.monotonic() < deadline:
@@ -296,7 +418,17 @@ def resident(name, host, port, formula, env=None):
     if IS_WINDOWS:
         command = [require('sc.exe'), 'start', windows_service(name, env)]
     elif platform.system() == 'Darwin':
-        command = [require('brew'), 'services', 'start', formula]
+        brew = require('brew')
+        if name == 'MySQL':
+            formula = env.get('LOCAL_MYSQL_FORMULA') or formula
+            if not env.get('LOCAL_MYSQL_FORMULA'):
+                prefix = subprocess.run([brew, '--prefix'], capture_output=True, text=True, timeout=5)
+                if prefix.returncode == 0:
+                    for candidate in ('mysql@8.0', 'mysql@8.4', 'mysql'):
+                        if (Path(prefix.stdout.strip()) / 'opt' / candidate / 'bin/mysqld').is_file():
+                            formula = candidate
+                            break
+        command = [brew, 'services', 'start', formula]
     else:
         key = 'LOCAL_MYSQL_SERVICE' if name == 'MySQL' else 'LOCAL_REDIS_SERVICE'
         command = [require('systemctl'), 'start', env.get(key) or ('mysql' if name == 'MySQL' else 'redis-server')]
@@ -334,12 +466,33 @@ def qdrant_bin(env):
     binary.parent.mkdir(exist_ok=True)
     url = f'https://github.com/qdrant/qdrant/releases/download/v1.15.5/qdrant-{arch}-{os_name}.{extension}'
     print('下载 Qdrant 1.15.5 …', flush=True)
-    for _ in range(8):
-        result = subprocess.run([require('curl'), '-fLsS', '-C', '-', '--max-time', '55', url, '-o', str(archive)])
-        if result.returncode == 0:
-            break
+    proxy = env.get('LOCAL_GITHUB_PROXY', 'https://ghfast.top').strip().rstrip('/')
+    sources = ([proxy + '/' + url] if proxy else []) + [url]
+    for index, source in enumerate(dict.fromkeys(sources)):
+        if index:
+            print('加速下载未成功，切换 GitHub 官方源 …', flush=True)
+        # Never append bytes from a different mirror or retain an invalid archive.
+        archive.unlink(missing_ok=True)
+        download_args = [require('curl'), '-fL', '--connect-timeout', '8',
+                                 '--max-time', '180', '--speed-limit', '1024', '--speed-time', '20',
+                                 source, '-o', str(archive)]
+        if INSTALL_OUTPUT is not None:
+            try:
+                run(download_args)
+                download_ok=True
+            except RuntimeError:
+                download_ok=False
+        else:
+            download_ok=subprocess.run(download_args).returncode==0
+        if download_ok and archive.exists():
+            with archive.open('rb') as downloaded:
+                digest = hashlib.file_digest(downloaded, 'sha256').hexdigest()
+            if digest == QDRANT_SHA256[f'{arch}-{os_name}']:
+                break
+            print('Qdrant 安装包 SHA-256 校验失败，丢弃该下载。', flush=True)
+        archive.unlink(missing_ok=True)
     else:
-        raise RuntimeError('Qdrant 下载未完成；重新运行可续传，或设置 LOCAL_QDRANT_BIN')
+        raise RuntimeError('Qdrant 下载或校验失败；可重新运行，或设置 LOCAL_QDRANT_BIN 指定已下载的官方可执行文件')
     temporary = binary.with_name(binary.name + '.extracting')
     try:
         if IS_WINDOWS:
@@ -374,21 +527,114 @@ def fingerprint(paths):
     return digest.hexdigest()
 
 
+def activate_macos_tools():
+    brew=shutil.which('brew')
+    if not brew:
+        brew=next((str(p) for p in (Path('/opt/homebrew/bin/brew'),Path('/usr/local/bin/brew')) if p.is_file()),None)
+    if not brew: return
+    result=subprocess.run([brew,'--prefix'],capture_output=True,text=True,timeout=5)
+    if result.returncode: return
+    prefix=Path(result.stdout.strip())
+    bins=[prefix/'opt'/formula/'bin' for formula in ('python@3.12','node@24','mysql@8.0','mysql@8.4','redis','maven')]
+    java=prefix/'opt/openjdk@21/libexec/openjdk.jdk/Contents/Home'
+    if java.is_dir():
+        os.environ['JAVA_HOME']=str(java);bins.insert(0,java/'bin')
+    bins.extend([prefix/'bin',prefix/'sbin'])
+    os.environ['PATH']=os.pathsep.join([str(path) for path in bins if path.is_dir()]+[os.environ.get('PATH','')])
+
+
+def inspect_environment(env):
+    tools = [
+        ('python', 'Python', env.get('LOCAL_AI_PYTHON') or shutil.which('python3.12') or sys.executable, ['--version'], r'Python (\d+)\.(\d+)', lambda m: (int(m[1]),int(m[2])) >= (3,11), '3.11+，推荐 3.12'),
+        ('java', 'Java', 'java', ['-version'], r'version "(\d+)', lambda m: int(m[1])>=21, '21+'),
+        ('node', 'Node.js', 'node', ['--version'], r'v(\d+)\.(\d+)', lambda m: (int(m[1]),int(m[2]))>=(22,12), '22.12+，推荐 24'),
+        ('npm', 'npm', 'npm', ['--version'], r'(\d+)\.', lambda m: True, '可用'),
+        ('maven', 'Maven', 'mvn', ['--version'], r'Apache Maven (\d+)\.(\d+)', lambda m: (int(m[1]),int(m[2])) >= (3,6), '3.6+'),
+        ('mysql', 'MySQL 客户端', 'mysql', ['--version'], r'(?:Ver|Distrib) (\d+)\.', lambda m: int(m[1])==8, '8.x'),
+        ('redis', 'Redis 客户端', 'redis-cli', ['--version'], r'redis-cli (\d+)', lambda m: True, '可用'),
+        ('curl', 'curl', 'curl', ['--version'], r'curl (\d+)', lambda m: True, '可用'),
+    ]
+    if platform.system()=='Darwin':
+        tools.append(('brew','Homebrew','brew',['--version'],r'Homebrew (\d+)',lambda m:True,'自动安装环境用'))
+    def inspect(spec):
+        key,label,binary,args,pattern,accept,requirement=spec
+        path=shutil.which(str(binary))
+        result={'id':key,'label':label,'path':path or '', 'requirement':requirement,'version':'','state':'缺失'}
+        if not path:
+            return result
+        try:
+            probe=subprocess.run(command_line([path,*args]),capture_output=True,text=True,errors='replace',timeout=8)
+            text=re.sub(r'\x1b\[[0-9;]*m','',probe.stdout+'\n'+probe.stderr).strip()
+            match=re.search(pattern,text)
+            result['version']=text.splitlines()[0][:120] if text else '无版本输出'
+            result['state']='已安装' if probe.returncode==0 and match and accept(match) else '版本不兼容' if probe.returncode==0 else '不可用'
+        except (OSError,subprocess.TimeoutExpired):
+            result['state']='检测失败'
+        return result
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return list(pool.map(inspect,tools))
+
+
+def inspect_project_dependencies(env):
+    frontend=ROOT/'short-video-agent-frontend'; ai=ROOT/'short-video-agent-ai'; backend=ROOT/'short-video-agent-backend'
+    host=platform.system()+'-'+platform.machine()+':'
+    def cached(label,executable,marker,inputs,prefix=''):
+        state='待安装' if not executable.is_file() else '待检查'
+        if executable.is_file():
+            try:
+                state='已就绪' if marker.read_text()==prefix+fingerprint(inputs) else '待更新'
+            except (OSError,ValueError):
+                state='待检查'
+        return {'label':label,'state':state,'path':str(executable)}
+    rows=[cached('前端依赖',frontend/('node_modules/.bin/vite.cmd' if IS_WINDOWS else 'node_modules/.bin/vite'),STATE/'frontend-deps.hash',[frontend/'package-lock.json',frontend/'package.json'],host),
+          cached('AI 依赖',ai/('.venv/Scripts/python.exe' if IS_WINDOWS else '.venv/bin/python'),STATE/'ai-deps.hash',[ai/'requirements.txt',ai/'constraints.txt'],host),
+          cached('后端构建',STATE/'bin/backend.jar',STATE/'backend-build.hash',[backend/'pom.xml',*[p for p in (backend/'src/main').rglob('*') if p.is_file()]])]
+    supplied=env.get('LOCAL_QDRANT_BIN') or shutil.which('qdrant')
+    path=Path(supplied).expanduser() if supplied else STATE/'bin'/('qdrant.exe' if IS_WINDOWS else 'qdrant')
+    if not path.is_absolute(): path=ROOT/path
+    rows.append({'label':'Qdrant','state':'已就绪' if path.is_file() else '待下载','path':str(path)})
+    return rows
+
+
+def environment_summary(environment, dependencies):
+    ready=sum(row['state']=='已安装' for row in environment)
+    lines=[paint(f'运行环境  {ready}/{len(environment)} 项可用','32' if ready==len(environment) else '33')]
+    problems=[f'{row["label"]}：{row["state"]}' for row in environment if row['state']!='已安装' and row['id']!='brew']
+    if problems: lines.append(paint('  '+'；'.join(problems),'33'))
+    lines.append('项目依赖  '+' · '.join(f'{row["label"]} {row["state"]}' for row in dependencies))
+    print('\n'.join(lines),flush=True)
+
+
+def show_environment_details(environment,dependencies):
+    print(paint('运行环境','1;32'))
+    for row in environment:
+        print(paint(f'{row["label"]}  {row["state"]}  / 要求 {row["requirement"]}','32' if row['state']=='已安装' else '33'))
+        if row['version']: print('  '+row['version'])
+        if row['path']: print('  '+row['path'])
+    print(paint('\n项目依赖','1;32'))
+    for row in dependencies: print(f'{row["label"]}  {row["state"]}\n  {row["path"]}')
+    print('\n待安装、待更新的项目依赖会在启动时自动处理。')
+
+
 def prepare(env):
-    for binary in ('java', 'mvn', 'node', 'npm', 'mysql', 'redis-cli'):
-        require(binary)
-    java = subprocess.run(['java', '-version'], capture_output=True, text=True)
-    match = re.search(r'version "(\d+)', java.stderr)
-    if not match or int(match.group(1)) < 21:
-        raise RuntimeError('需要 Java 21 或更高版本')
+    environment=inspect_environment(env)
+    problems=[f'{row["label"]}：{row["state"]}（要求 {row["requirement"]}）' for row in environment if row['state']!='已安装']
+    if problems:
+        hint='；macOS 可运行 bash run.sh setup 自动安装' if platform.system()=='Darwin' else ''
+        raise RuntimeError('运行环境未齐全：'+'；'.join(problems)+hint)
     frontend = ROOT / 'short-video-agent-frontend'
     host = platform.system() + '-' + platform.machine() + ':'
     lock_hash = host + fingerprint([frontend / 'package-lock.json', frontend / 'package.json'])
     marker = STATE / 'frontend-deps.hash'
     if not (frontend / ('node_modules/.bin/vite.cmd' if IS_WINDOWS else 'node_modules/.bin/vite')).exists() or not marker.exists() or marker.read_text() != lock_hash:
         print('安装前端依赖 …', flush=True)
-        run(['npm', 'ci'], cwd=frontend)
+        npm_args = ['npm', 'ci', '--no-audit', '--no-fund', '--fetch-retries=1', '--fetch-timeout=20000']
+        mirror_install('npm', npm_args + ['--registry=' + env.get('LOCAL_NPM_REGISTRY', 'https://registry.npmmirror.com')],
+                       npm_args + ['--registry=https://registry.npmjs.org'], frontend)
         marker.write_text(lock_hash)
+        if INSTALL_OUTPUT is not None:
+            INSTALL_OUTPUT.dependencies=inspect_project_dependencies(env)
+            INSTALL_OUTPUT.draw(force=True)
     ai = ROOT / 'short-video-agent-ai'
     python = ai / ('.venv/Scripts/python.exe' if IS_WINDOWS else '.venv/bin/python')
     created_venv = not python.exists()
@@ -399,18 +645,28 @@ def prepare(env):
     marker = STATE / 'ai-deps.hash'
     if created_venv or not marker.exists() or marker.read_text() != deps_hash:
         print('安装 AI 服务依赖 …', flush=True)
-        run([python, '-m', 'pip', 'install', '-r', 'requirements.txt'], cwd=ai)
+        pip_args = [python, '-m', 'pip', 'install', '--disable-pip-version-check', '--retries', '1', '--timeout', '15', '-r', 'requirements.txt']
+        mirror_install('pip', pip_args + ['--index-url', env.get('LOCAL_PIP_INDEX_URL', 'https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple')],
+                       pip_args + ['--index-url', 'https://pypi.org/simple'], ai)
         marker.write_text(deps_hash)
+        if INSTALL_OUTPUT is not None:
+            INSTALL_OUTPUT.dependencies=inspect_project_dependencies(env)
+            INSTALL_OUTPUT.draw(force=True)
     backend = ROOT / 'short-video-agent-backend'
     source_hash = fingerprint([backend / 'pom.xml', *[p for p in (backend / 'src/main').rglob('*') if p.is_file()]])
     marker = STATE / 'backend-build.hash'
     jar = STATE / 'bin' / 'backend.jar'
     if not jar.exists() or not marker.exists() or marker.read_text() != source_hash:
         print('构建 Java 服务 …', flush=True)
-        run(['mvn', '-q', '-DskipTests', 'package'], cwd=backend)
+        maven_args = ['mvn', '-q', '-DskipTests', '-Dmaven.wagon.http.connectionTimeout=10000', '-Dmaven.wagon.http.readTimeout=20000']
+        mirror_install('Maven', maven_args + ['-s', maven_settings(env.get('LOCAL_MAVEN_MIRROR', 'https://maven.aliyun.com/repository/public')), 'package'],
+                       maven_args + ['-s', maven_settings(), 'package'], backend)
         jar.parent.mkdir(exist_ok=True)
         shutil.copy2(backend / 'target/short-video-agent-backend-1.0.0.jar', jar)
         marker.write_text(source_hash)
+        if INSTALL_OUTPUT is not None:
+            INSTALL_OUTPUT.dependencies=inspect_project_dependencies(env)
+            INSTALL_OUTPUT.draw(force=True)
     return python, jar
 
 
@@ -581,8 +837,8 @@ def collect_status(env):
     """Probe each endpoint once, concurrently, before drawing the status table."""
     lan = lan_ipv4(env)
     app_ports = ports(env)
-    endpoints = {(env['LOCAL_DB_HOST'], env['LOCAL_DB_PORT']),
-                 (env['LOCAL_REDIS_HOST'], env['LOCAL_REDIS_PORT'])}
+    endpoints = {(env['LOCAL_DB_HOST'], int(env['LOCAL_DB_PORT'])),
+                 (env['LOCAL_REDIS_HOST'], int(env['LOCAL_REDIS_PORT']))}
     endpoints.update(('127.0.0.1', port) for port in app_ports.values())
     if lan:
         endpoints.update((lan, port) for _, port in list(endpoints))
@@ -602,12 +858,12 @@ def status(env, snapshot=None):
     def endpoint(host, port, active):
         if host not in ('127.0.0.1', 'localhost', '::1', '0.0.0.0'):
             return f'{host}:{port}'
-        if active and lan and checks.get((lan, port), False):
+        if active and lan and checks.get((lan, int(port)), False):
             return f'{lan}:{port}'
         return f'{port}（仅本机）' if active else str(port)
     for name, host_key, port_key in [('MySQL', 'LOCAL_DB_HOST', 'LOCAL_DB_PORT'), ('Redis', 'LOCAL_REDIS_HOST', 'LOCAL_REDIS_PORT')]:
         host, port = env[host_key], env[port_key]
-        active = checks[(host, port)]
+        active = checks[(host, int(port))]
         lines.append(paint(cell(name, 14) + cell('运行中' if active else '未运行', 26) + endpoint(host, port, active), '32' if active else '33'))
     for name, port in snapshot['ports'].items():
         owned, listening = snapshot['owners'][name], checks[('127.0.0.1', port)]
@@ -616,7 +872,7 @@ def status(env, snapshot=None):
     for label, key, suffix in [('前端', 'LOCAL_FRONTEND_PORT', '/'), ('后端', 'LOCAL_BACKEND_PORT', '/api/health')]:
         port = env[key]
         if lan:
-            note = '' if checks.get((lan, port), False) else '（下次启动启用内网访问）'
+            note = '' if checks.get((lan, int(port)), False) else '（下次启动启用内网访问）'
             lines.append(paint(f'{label}：http://{lan}:{port}{suffix} {note}', '1;32'))
         else:
             lines.append(paint(f'{label}：未检测到内网 IPv4，端口 {port}', '33'))
@@ -763,7 +1019,7 @@ def read_menu_choice(options, key_reader=None):
                 selected = (selected - 1) % len(options)
             elif key in ('DOWN', 'RIGHT'):
                 selected = (selected + 1) % len(options)
-            elif key in ('1', '2', '3', '4'):
+            elif key.isdigit() and 1 <= int(key) <= len(options):
                 selected = int(key) - 1
 
 
@@ -791,15 +1047,21 @@ def menu(demo=False):
     while True:
         env = config(initialize=False)
         snapshot = collect_status(env)
+        environment = inspect_environment(env)
+        dependencies = inspect_project_dependencies(env)
         clear_menu_screen()
         print(paint('知映 · 本地服务\n', '1;32'))
         status(env, snapshot)
+        print()
+        environment_summary(environment, dependencies)
         running = sum(bool(owner) for owner in snapshot['owners'].values())
         listening = any(snapshot['endpoints'][('127.0.0.1', port)] for port in snapshot['ports'].values())
         summary = ('项目已启动。' if running == len(APP_ORDER) else '项目部分运行。' if running else
                    '检测到服务端口已监听，进程归属待确认。' if listening else '项目未启动。')
         print(paint('\n' + summary, '1;32' if running else '33'))
-        choice = read_menu_choice(['停止项目' if running else '启动项目', '刷新状态', '查看日志', '取消 / 退出'])
+        options=['停止项目' if running else '启动项目', '刷新状态', '查看日志', '取消 / 退出', '环境与依赖详情']
+        if platform.system()=='Darwin': options.append('安装 / 修复运行环境')
+        choice = read_menu_choice(options)
         if choice in ('4', 'q', 'Q'):
             print(paint('已退出菜单。' if attempted_mutation else '已退出菜单，服务状态未更改。'))
             return
@@ -807,16 +1069,31 @@ def menu(demo=False):
             if choice == '1':
                 attempted_mutation = True
                 clear_menu_screen()
-                perform('stop' if running else 'start', demo=demo)
+                if running:
+                    perform('stop', demo=demo)
+                else:
+                    with installation_display(env,environment,dependencies):
+                        perform('start',demo=demo)
                 wait_for_menu_return()
             elif choice == '2':
                 continue
+            elif choice == '6' and platform.system()=='Darwin':
+                clear_menu_screen()
+                with installation_display(env,environment,dependencies):
+                    run(['bash',ROOT/'run.sh','setup'])
+                activate_macos_tools()
+                print('运行环境安装完成，菜单已自动采用已安装的版本。')
+                wait_for_menu_return()
+            elif choice == '5':
+                clear_menu_screen()
+                show_environment_details(environment, dependencies)
+                wait_for_menu_return()
             elif choice == '3':
                 clear_menu_screen()
                 show_logs(env)
                 wait_for_menu_return()
             else:
-                print('请输入 1、2、3 或 4。')
+                print('请输入菜单中的编号。')
         except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as error:
             print('\n操作失败：' + redact(str(error), env), file=sys.stderr, flush=True)
             wait_for_menu_return()
@@ -833,7 +1110,12 @@ def main():
     if args.command == 'menu':
         menu(args.demo)
     else:
-        perform(args.command, args.demo, args.service)
+        if args.command in ('start','toggle') and sys.stdout.isatty():
+            env=config(initialize=False)
+            with installation_display(env,inspect_environment(env),inspect_project_dependencies(env)):
+                perform(args.command,args.demo,args.service)
+        else:
+            perform(args.command, args.demo, args.service)
 
 
 if __name__ == '__main__':
