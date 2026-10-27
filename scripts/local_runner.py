@@ -2,6 +2,7 @@
 """Local service controller. MySQL and Redis remain running on stop."""
 import argparse
 from contextlib import contextmanager, nullcontext
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import ipaddress
 import json
@@ -576,34 +577,54 @@ def lan_ipv4(env):
     return None
 
 
-def status(env):
+def collect_status(env):
+    """Probe each endpoint once, concurrently, before drawing the status table."""
     lan = lan_ipv4(env)
-    print(paint('内网 IPv4：' + (lan or '未检测到，请检查网络或设置 LOCAL_LAN_IP'), '1;32'))
-    print(paint(cell('服务', 14) + cell('状态', 26) + '端口 / 访问地址', '1;32'))
+    app_ports = ports(env)
+    endpoints = {(env['LOCAL_DB_HOST'], env['LOCAL_DB_PORT']),
+                 (env['LOCAL_REDIS_HOST'], env['LOCAL_REDIS_PORT'])}
+    endpoints.update(('127.0.0.1', port) for port in app_ports.values())
+    if lan:
+        endpoints.update((lan, port) for _, port in list(endpoints))
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        probes = {endpoint: pool.submit(tcp, *endpoint) for endpoint in endpoints}
+        owners = {name: pool.submit(alive, name) for name in APP_ORDER}
+        return {'lan': lan, 'ports': app_ports,
+                'endpoints': {key: future.result() for key, future in probes.items()},
+                'owners': {key: future.result() for key, future in owners.items()}}
+
+
+def status(env, snapshot=None):
+    snapshot = snapshot if snapshot is not None else collect_status(env)
+    lan, checks = snapshot['lan'], snapshot['endpoints']
+    lines = [paint('内网 IPv4：' + (lan or '未检测到，请检查网络或设置 LOCAL_LAN_IP'), '1;32'),
+             paint(cell('服务', 14) + cell('状态', 26) + '端口 / 访问地址', '1;32')]
     def endpoint(host, port, active):
         if host not in ('127.0.0.1', 'localhost', '::1', '0.0.0.0'):
             return f'{host}:{port}'
-        if active and lan and tcp(lan, port):
+        if active and lan and checks.get((lan, port), False):
             return f'{lan}:{port}'
         return f'{port}（仅本机）' if active else str(port)
     for name, host_key, port_key in [('MySQL', 'LOCAL_DB_HOST', 'LOCAL_DB_PORT'), ('Redis', 'LOCAL_REDIS_HOST', 'LOCAL_REDIS_PORT')]:
         host, port = env[host_key], env[port_key]
-        active = tcp(host, port)
-        print(paint(cell(name, 14) + cell('运行中' if active else '未运行', 26) + endpoint(host, port, active), '32' if active else '33'))
-    for name, port in ports(env).items():
-        owned, listening = alive(name), tcp('127.0.0.1', port)
+        active = checks[(host, port)]
+        lines.append(paint(cell(name, 14) + cell('运行中' if active else '未运行', 26) + endpoint(host, port, active), '32' if active else '33'))
+    for name, port in snapshot['ports'].items():
+        owned, listening = snapshot['owners'][name], checks[('127.0.0.1', port)]
         state = ('运行中' if listening else '进程在，端口未就绪') if owned else ('端口已监听，归属待确认' if listening else '未运行')
-        print(paint(cell(LABELS[name], 14) + cell(state, 26) + endpoint('127.0.0.1', port, listening), '32' if owned and listening else '33'))
+        lines.append(paint(cell(LABELS[name], 14) + cell(state, 26) + endpoint('127.0.0.1', port, listening), '32' if owned and listening else '33'))
     for label, key, suffix in [('前端', 'LOCAL_FRONTEND_PORT', '/'), ('后端', 'LOCAL_BACKEND_PORT', '/api/health')]:
         port = env[key]
         if lan:
-            note = '' if tcp(lan, port) else '（下次启动启用内网访问）'
-            print(paint(f'{label}：http://{lan}:{port}{suffix} {note}', '1;32'))
+            note = '' if checks.get((lan, port), False) else '（下次启动启用内网访问）'
+            lines.append(paint(f'{label}：http://{lan}:{port}{suffix} {note}', '1;32'))
         else:
-            print(paint(f'{label}：未检测到内网 IPv4，端口 {port}', '33'))
-    print(paint(f'AI 内部接口：端口 {env["LOCAL_AI_PORT"]} /health'))
+            lines.append(paint(f'{label}：未检测到内网 IPv4，端口 {port}', '33'))
+    lines.append(paint(f'AI 内部接口：端口 {env["LOCAL_AI_PORT"]} /health'))
     if (STATE / 'mode').exists():
-        print(paint('AI 模式：' + (STATE / 'mode').read_text()))
+        lines.append(paint('AI 模式：' + (STATE / 'mode').read_text()))
+    print('\n'.join(lines), flush=True)
+    return snapshot
 
 
 @contextmanager
@@ -723,14 +744,15 @@ def read_menu_choice(options, key_reader=None):
     selected, rendered, ansi = 0, False, enable_ansi()
     with (keyboard_mode() if key_reader is None else nullcontext()):
         while True:
-            if rendered and ansi:
-                print(f'\033[{len(options) + 1}A', end='')
+            frame = [f'\033[{len(options) + 1}A'] if rendered and ansi else []
             for index, label in enumerate(options):
                 clear = '\r\033[2K' if ansi else ''
                 marker = '›' if index == selected else ' '
                 text = f'{marker} {index + 1}. {label}'
-                print(clear + (('\033[1;30;102m' if index == selected else '\033[32m') + text + '\033[0m' if ansi else text))
-            print(('\r\033[2K' if ansi else '') + paint('↑↓ / ←→ 选择，数字定位，Enter 确认，Esc 取消'), flush=True)
+                frame.append(clear + (('\033[1;30;102m' if index == selected else '\033[32m') + text + '\033[0m' if ansi else text) + '\n')
+            frame.append(('\r\033[2K' if ansi else '') + paint('↑↓ / ←→ 选择，数字定位，Enter 确认，Esc 取消') + '\n')
+            sys.stdout.write(''.join(frame))
+            sys.stdout.flush()
             rendered = True
             key = (key_reader or read_key)()
             if key == 'ENTER':
@@ -750,9 +772,10 @@ def menu(demo=False):
     while True:
         env = config(initialize=False)
         print(paint('\n知映 · 本地服务\n', '1;32'))
-        status(env)
-        running = sum(bool(alive(name)) for name in APP_ORDER)
-        listening = any(tcp('127.0.0.1', port) for port in ports(env).values()) if not running else False
+        snapshot = collect_status(env)
+        status(env, snapshot)
+        running = sum(bool(owner) for owner in snapshot['owners'].values())
+        listening = any(snapshot['endpoints'][('127.0.0.1', port)] for port in snapshot['ports'].values())
         summary = ('项目已启动。' if running == len(APP_ORDER) else '项目部分运行。' if running else
                    '检测到服务端口已监听，进程归属待确认。' if listening else '项目未启动。')
         print(paint('\n' + summary, '1;32' if running else '33'))

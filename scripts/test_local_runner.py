@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest.mock import Mock, patch
@@ -124,6 +125,27 @@ class ControllerTests(unittest.TestCase):
         interfaces = 'utun4: flags=UP\n inet 198.18.0.1\nen1: flags=UP\n inet 192.168.7.1\n status: inactive\nen0: flags=UP\n inet 192.168.31.102 netmask 0xffffff00\n status: active\n'
         with patch.object(runner.platform, 'system', return_value='Darwin'), patch.object(runner.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout=interfaces)):
             self.assertEqual(runner.lan_ipv4({}), '192.168.31.102')
+
+    def test_status_probes_in_parallel_once_and_render_does_no_io(self):
+        # All twelve socket probes must enter together; serial detection deadlocks.
+        barrier = threading.Barrier(12)
+        def probe(host, port):
+            barrier.wait(timeout=2)
+            return True
+        with patch.object(runner, 'lan_ipv4', return_value='192.168.31.102'), \
+                patch.object(runner, 'tcp', side_effect=probe) as tcp, \
+                patch.object(runner, 'alive', return_value={'pid':1234}) as alive:
+            snapshot = runner.collect_status(self.env)
+        endpoints = [call.args for call in tcp.call_args_list]
+        self.assertEqual(len(endpoints),12)
+        self.assertEqual(len(set(endpoints)),12)
+        self.assertEqual(alive.call_count,4)
+        with patch.object(runner, 'tcp') as tcp, patch.object(runner, 'alive') as alive, \
+                patch.object(runner, 'lan_ipv4') as lan, contextlib.redirect_stdout(io.StringIO()):
+            runner.status(self.env,snapshot)
+        tcp.assert_not_called()
+        alive.assert_not_called()
+        lan.assert_not_called()
 
     def test_status_is_green_and_uses_lan_ipv4_without_loopback_urls(self):
         output = io.StringIO()
