@@ -1,3 +1,4 @@
+import { randomUuid } from "../lib/uuid";
 import { computed, onUnmounted, ref } from "vue";
 import { conversationApi, streamConversation } from "../lib/conversation-api";
 import { errorMessage } from "../lib/api";
@@ -215,7 +216,7 @@ export function useConversation() {
       };
       const signature = JSON.stringify({ id: conversation.value!.id, ...body });
       if (signature !== sendPayload) {
-        sendKey = crypto.randomUUID();
+        sendKey = randomUuid();
         sendPayload = signature;
       }
       const result = await conversationApi.send(
@@ -279,7 +280,7 @@ export function useConversation() {
       const updated = await conversationApi.retry(
         id,
         messageId,
-        crypto.randomUUID(),
+        randomUuid(),
       );
       if (epoch === generation && !disposed) accept(updated.conversation);
     } catch (e) {

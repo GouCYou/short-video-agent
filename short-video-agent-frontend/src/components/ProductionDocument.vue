@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { randomUuid } from "../lib/uuid";
 import AnimatedDisclosure from "./AnimatedDisclosure.vue";
 import { ref, watch } from "vue";
 import { Plus, Delete } from "@element-plus/icons-vue";
@@ -24,7 +25,7 @@ watch(
 function addSegment() {
   if (content.value.segments.length < 30)
     content.value.segments.push({
-      id: crypto.randomUUID(),
+      id: randomUuid(),
       duration: 10,
       visual: "",
       narration: "",

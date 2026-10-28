@@ -126,3 +126,111 @@ def test_pure_news_query_does_not_force_creative_choices():
         c.app.state.conversation.news.search=AsyncMock(return_value={'matchCount':1,'sources':[source()],'articles':[],'notices':[],'factVerified':False})
         frames=ndjson(c,body('帮我查一下汽车新闻并总结'))
     assert frames[-1]['type']=='final' and frames[-1]['data']['choices']==[]
+
+@pytest.mark.parametrize('title,expected',[
+    ('iPhone Duo屏幕翻车：换机要排队 售后缺货',True),
+    ('Apple unveils iPhone\u00a0Duo',True),
+    ('IPHONE-DUO teardown reveals display details',True),
+    ('苹果发布 iPhone 18 Pro',False),
+    ('台风烟花向偏西方向移动',False),
+    ('这样的苹果，现在也不能吃',False),
+    ('Duo earnings report',False),
+])
+def test_named_product_requires_all_entity_terms(title,expected):
+    assert NewsCrawler.relevant('iPhone duo 相关新闻',title)==expected
+    assert NewsCrawler.category('iPhone duo')=='it'
+
+@pytest.mark.asyncio
+async def test_every_provider_output_is_filtered_again_before_reading():
+    crawler=NewsCrawler()
+    crawler.discover=AsyncMock(return_value=([
+        {'title':'台风新闻','url':'https://www.chinanews.com.cn/china/2026/10-28/1.shtml','publisher':'中新网'},
+        {'title':'iPhone 18发布','url':'https://www.ithome.com/0/999/100.htm','publisher':'IT之家'},
+        {'title':'iPhone Duo屏幕问题','url':'https://www.ithome.com/0/999/101.htm','publisher':'IT之家'},
+    ],[]))
+    async def article(_client,item):
+        return dict(item,content='原文摘要',contentStatus='SUMMARY',fetchedAt=datetime.now(timezone.utc).isoformat())
+    crawler.article=AsyncMock(side_effect=article)
+    result=await crawler.search(SearchNews(query='iPhone Duo'))
+    assert result['matchCount']==1
+    assert result['articles'][0]['title']=='iPhone Duo屏幕问题'
+    assert crawler.article.await_count==1
+    assert '台风' not in str(result)
+
+@pytest.mark.asyncio
+async def test_no_matching_news_returns_empty_instead_of_unrelated_filler():
+    crawler=NewsCrawler()
+    crawler.discover=AsyncMock(return_value=([{'title':'西班牙列车事故','url':'https://www.chinanews.com.cn/china/2026/10-28/1.shtml'}],[]))
+    crawler.article=AsyncMock()
+    result=await crawler.search(SearchNews(query='iPhone Duo'))
+    assert result['matchCount']==0 and result['sources']==[]
+    crawler.article.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_news_index_resolves_real_publisher_link_and_original_date():
+    import json
+    now=(datetime.now(timezone.utc)-timedelta(hours=1)).replace(microsecond=0)
+    calls=[]
+    def serve(request):
+        calls.append((request.method,str(request.url)))
+        if request.url.host=='news.google.com':
+            if request.url.path=='/rss/search':
+                return httpx.Response(200,text=f'<rss><channel><item><title>iPhone Duo国行开售</title><link>https://news.google.com/rss/articles/CBM_TEST</link><pubDate>{format_datetime(now)}</pubDate><source url="https://www.thepaper.cn">澎湃新闻</source></item></channel></rss>')
+            if request.method=='POST':
+                assert b'f.req=' in request.content
+                payload=json.dumps(['garturlres','https://www.thepaper.cn/newsDetail_forward_34317534'])
+                return httpx.Response(200,text=")]}'\n\n"+json.dumps([['wrb.fr','Fbv4je',payload]]))
+            return httpx.Response(200,text='<div data-n-a-sg="public-signature" data-n-a-ts="1234"></div>')
+        if request.url.path=='/robots.txt':return httpx.Response(200,text='User-agent: *\nDisallow: /')
+        return httpx.Response(200,text='<rss><channel/></rss>')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as client:
+        result=await NewsCrawler(client).search(SearchNews(query='iPhone Duo'))
+    assert result['matchCount']==1
+    article=result['articles'][0]
+    assert article['url']=='https://www.thepaper.cn/newsDetail_forward_34317534'
+    assert article['publishedAt']==now.isoformat()
+    assert article['contentStatus']=='SUMMARY'
+    assert any(method=='POST' and 'batchexecute' in url for method,url in calls)
+    assert result['sources'][0]['sourceUrl']==article['url']
+
+@pytest.mark.asyncio
+async def test_resolved_article_headline_must_still_match_query():
+    crawler=NewsCrawler()
+    crawler.discover=AsyncMock(return_value=([{'title':'iPhone Duo新消息','url':'https://www.ithome.com/0/999/101.htm','publisher':'IT之家'}],[]))
+    crawler.article=AsyncMock(return_value={'title':'台风烟花','url':'https://www.ithome.com/0/999/101.htm','publisher':'IT之家','content':'无关内容','contentStatus':'BODY','fetchedAt':datetime.now(timezone.utc).isoformat()})
+    result=await crawler.search(SearchNews(query='iPhone Duo'))
+    assert result['matchCount']==0
+
+@pytest.mark.parametrize('query,related,unrelated',[
+    ('比亚迪 电池','比亚迪发布新型动力电池','特斯拉调整电池供应商'),
+    ('深圳 台风','深圳发布台风防御提醒','上海发布台风预警'),
+    ('Anthropic IPO','Anthropic提交IPO申请','OpenAI筹备IPO上市'),
+    ('Claude-3.5','Claude 3.5发布新功能','Claude 4发布新功能'),
+    ('新能源汽车','新能源汽车补贴政策发布','消费者关注燃油汽车展会'),
+    ('中国 载人 登月','中国载人登月工程公布进展','美国公布新一轮登月计划'),
+])
+def test_relevance_is_general_across_products_policies_weather_and_company_events(query,related,unrelated):
+    assert NewsCrawler.relevant(query,related)
+    assert not NewsCrawler.relevant(query,unrelated)
+
+@pytest.mark.asyncio
+async def test_real_news_is_not_starved_by_fast_generic_web_results():
+    crawler=NewsCrawler()
+    web=[{'title':'比亚迪报价'+str(i),'url':f'https://www.eastmoney.com/company/{i}.html','publisher':'网页','discoveryKind':'WEB'} for i in range(10)]
+    news=[{'title':'比亚迪发布新型电池'+str(i),'url':f'https://www.ithome.com/0/999/{i}.htm','publisher':'IT之家','discoveryKind':'NEWS','publishedAt':datetime.now(timezone.utc).isoformat()} for i in range(3)]
+    crawler.discover=AsyncMock(return_value=(web+news,[]))
+    async def read(client,item):
+        return dict(item,content='原文',contentStatus='SUMMARY',fetchedAt=datetime.now(timezone.utc).isoformat())
+    crawler.article=AsyncMock(side_effect=read)
+    result=await crawler.search(SearchNews(query='比亚迪',limit=3))
+    assert result['matchCount']==3
+    assert all('电池' in item['title'] for item in result['articles'])
+    assert all('报价' not in item['title'] for item in result['articles'])
+
+@pytest.mark.asyncio
+async def test_generic_web_page_without_news_evidence_is_not_reported_as_news():
+    crawler=NewsCrawler()
+    crawler.discover=AsyncMock(return_value=([{'title':'比亚迪报价','url':'https://www.eastmoney.com/company/list.html','discoveryKind':'WEB'}],[]))
+    crawler.article=AsyncMock(return_value={'title':'比亚迪报价','url':'https://www.eastmoney.com/company/list.html','content':'车型报价','contentStatus':'BODY','publisher':'网页','discoveryKind':'WEB','fetchedAt':datetime.now(timezone.utc).isoformat()})
+    result=await crawler.search(SearchNews(query='比亚迪'))
+    assert result['matchCount']==0

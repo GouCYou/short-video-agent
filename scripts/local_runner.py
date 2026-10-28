@@ -239,7 +239,8 @@ def installation_display(env,environment,dependencies):
         output.draw(force=True)
         yield output
     except BaseException as error:
-        output.write('\n'+('操作已取消' if isinstance(error,KeyboardInterrupt) else '操作失败：'+str(error))+'\n')
+        output.log.write(redact('\n'+('操作已取消' if isinstance(error,KeyboardInterrupt) else '操作失败：'+str(error))+'\n',env))
+        output.log.flush()
         raise
     finally:
         sys.stdout=previous;INSTALL_OUTPUT=previous_output;output.close()

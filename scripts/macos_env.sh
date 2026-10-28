@@ -85,18 +85,19 @@ macos_install_environment() {
   missing="$(macos_missing_environment)"
   if [ -z "$missing" ]; then printf '%s\n' '运行环境已齐全，无需安装。'; return 0; fi
   printf '需要安装：\n%s\n' "$missing"
-  while IFS= read -r formula; do
+  # A child installer may read stdin; never use the install queue as its stdin.
+  for formula in $missing; do
     [ -n "$formula" ] || continue
     printf '\n安装 %s …\n' "$formula"
-    if ! "$brew_command" install "$formula"; then
+    if ! "$brew_command" install "$formula" </dev/null; then
       printf '%s\n' '镜像安装未成功，回退 Homebrew 官方源 …'
-      if ! (unset HOMEBREW_BOTTLE_DOMAIN HOMEBREW_API_DOMAIN HOMEBREW_BREW_GIT_REMOTE HOMEBREW_CORE_GIT_REMOTE; "$brew_command" install "$formula"); then
+      if ! (unset HOMEBREW_BOTTLE_DOMAIN HOMEBREW_API_DOMAIN HOMEBREW_BREW_GIT_REMOTE HOMEBREW_CORE_GIT_REMOTE; "$brew_command" install "$formula" </dev/null); then
         printf '安装 %s 失败。修复上方错误后再次运行即可，已成功安装的依赖会复用。\n' "$formula" >&2
         return 1
       fi
     fi
     macos_activate_environment
-  done <<< "$missing"
+  done
   remaining="$(macos_missing_environment)"
   if [ -n "$remaining" ]; then printf '以下工具仍不可用：\n%s\n' "$remaining" >&2; return 1; fi
   printf '\n%s\n' '运行环境安装完成。MySQL、Redis 会在选择启动项目时自动启用。' '未修改已有数据库密码；已有数据库账号请在 .env.local 配置。'

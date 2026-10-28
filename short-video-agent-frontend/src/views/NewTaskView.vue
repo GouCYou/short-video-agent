@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { randomUuid } from "../lib/uuid";
 import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
@@ -64,7 +65,7 @@ async function submit() {
     };
     const serialized = JSON.stringify(payload);
     if (serialized !== submittedPayload) {
-      idempotencyKey = crypto.randomUUID();
+      idempotencyKey = randomUuid();
       submittedPayload = serialized;
     }
     const task = await api.create(payload, idempotencyKey);

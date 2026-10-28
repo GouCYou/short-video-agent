@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { randomUuid } from "../lib/uuid";
 import { computed, ref } from "vue";
 import { PhArrowUpRight, PhPlus, PhTrash } from "@phosphor-icons/vue";
 import type { ProductionPackage } from "../lib/conversation-types";
@@ -24,7 +25,7 @@ const total = computed(() =>
 );
 function addShot() {
   content.value.segments.push({
-    id: crypto.randomUUID(),
+    id: randomUuid(),
     duration: 5,
     visual: "补充画面",
     narration: "补充口播",

@@ -14,6 +14,7 @@ import os
 import re
 import socket
 import time
+import unicodedata
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 import xml.etree.ElementTree as ET
@@ -38,7 +39,9 @@ HOSTS = set(('chinanews.com.cn people.com.cn xinhuanet.com news.cn cctv.com sina
              '163.com thepaper.cn qq.com sohu.com yicai.com stcn.com ce.cn cnr.cn stdaily.com '
              'gmw.cn cnstock.com eastmoney.com pcauto.com.cn autohome.com.cn bitauto.com '
              'chinadaily.com.cn reuters.com apnews.com bbc.com bbc.co.uk theguardian.com '
-             'techcrunch.com arstechnica.com scmp.com cnbc.com cnn.com bing.com gdeltproject.org').split())
+             'techcrunch.com arstechnica.com scmp.com cnbc.com cnn.com bing.com gdeltproject.org '
+             'news.google.com apple.com apple.com.cn ithome.com ifanr.com ifeng.com nbd.com.cn mydrivers.com '
+             'macrumors.com 9to5mac.com techradar.com tomsguide.com androidcentral.com').split())
 UA = 'ZhiyingNewsBot/1.0'
 UTC = timezone.utc
 
@@ -186,6 +189,7 @@ class NewsCrawler:
         self.locks = defaultdict(asyncio.Lock)
         self.last_fetch = {}
         self.cache = {}
+        self.resolved_links = {}
 
     @asynccontextmanager
     async def session(self):
@@ -215,7 +219,7 @@ class NewsCrawler:
             raise ServiceError('新闻来源域名暂时无法解析。', 502, 'NEWS_DNS_FAILED') from exc
         return urlunsplit(('https', host, parsed.path or '/', parsed.query, ''))
 
-    async def fetch(self, client, url, *, robots=True):
+    async def fetch(self, client, url, *, robots=True, method="GET", data=None):
         url = await self.validate_url(url)
         for _ in range(5):
             origin = urlunsplit(('https', urlsplit(url).netloc, '', '', ''))
@@ -244,7 +248,7 @@ class NewsCrawler:
                 if gap > 0:
                     await asyncio.sleep(gap)
                 try:
-                    async with client.stream('GET', url, follow_redirects=False, headers={'User-Agent': UA}) as response:
+                    async with client.stream(method, url, follow_redirects=False, headers={'User-Agent': UA}, data=data) as response:
                         if response.is_redirect:
                             target = response.headers.get('location', '')
                             url = await self.validate_url(urljoin(url, target))
@@ -262,86 +266,168 @@ class NewsCrawler:
                     self.last_fetch[origin] = time.monotonic()
         raise ServiceError('新闻来源跳转次数过多。', 422, 'NEWS_TOO_MANY_REDIRECTS')
 
+    async def resolve_news_link(self, client, link):
+        if urlsplit(link).hostname != 'news.google.com':
+            return await self.validate_url(link)
+        cached=self.resolved_links.get(link)
+        if cached and time.monotonic()-cached[0]<3600:
+            return cached[1]
+        match=re.fullmatch(r'/rss/articles/([A-Za-z0-9_-]+)',urlsplit(link).path)
+        if not match:
+            raise ServiceError('新闻聚合链接格式无法解析。',422,'NEWS_LINK_RESOLVE_FAILED')
+        raw,_=await self.fetch(client,link,robots=False)
+        text=raw.decode('utf-8',errors='replace')
+        signature=re.search(r'data-n-a-sg="([^"]+)"',text)
+        stamp=re.search(r'data-n-a-ts="(\d+)"',text)
+        if not signature or not stamp:
+            raise ServiceError('新闻原文链接暂时无法解析。',502,'NEWS_LINK_RESOLVE_FAILED')
+        routing=[['X','X',['X','X'],None,None,1,1,'US:en',None,1,None,None,None,None,None,0,1],
+                 'X','X',1,[1,1,1],1,1,None,0,0,None,0]
+        payload=['garturlreq',routing,match[1],int(stamp[1]),unescape(signature[1])]
+        raw,_=await self.fetch(client,'https://news.google.com/_/DotsSplashUi/data/batchexecute',robots=False,
+                               method='POST',data={'f.req':json.dumps([[['Fbv4je',json.dumps(payload),None,'generic']]])})
+        response=raw.decode('utf-8',errors='replace')
+        for line in response.splitlines():
+            if not line.startswith('[['):continue
+            try:
+                for frame in json.loads(line):
+                    if len(frame)>2 and frame[:2]==['wrb.fr','Fbv4je'] and isinstance(frame[2],str):
+                        value=json.loads(frame[2])
+                        if isinstance(value,list) and len(value)>1 and value[0]=='garturlres' and isinstance(value[1],str):
+                            resolved=await self.validate_url(value[1])
+                            if urlsplit(resolved).hostname=='news.google.com':continue
+                            self.resolved_links[link]=(time.monotonic(),resolved)
+                            if len(self.resolved_links)>100:self.resolved_links.pop(next(iter(self.resolved_links)))
+                            return resolved
+            except (ValueError,TypeError):continue
+        raise ServiceError('新闻聚合索引未返回原文链接。',502,'NEWS_LINK_RESOLVE_FAILED')
+
     @staticmethod
     def category(query):
         if re.search(r'汽车|新能源|车企|比亚迪|特斯拉|智驾|买车|驾驶', query, re.I):
             return 'auto'
-        if re.search(r'科技|人工智能|\bAI\b|芯片|数码|互联网|手机', query, re.I):
+        if re.search(r'科技|人工智能|\bAI\b|芯片|数码|互联网|手机|苹果|iphone|apple|ipad|anthropic|openai', query, re.I):
             return 'it'
         if re.search(r'财经|金融|消费|经济|股市|银行|基金', query):
             return 'finance'
         return 'china'
 
     @staticmethod
-    def relevant(query, title, url):
-        terms = [word for word in re.split(r'[\s,，、]+', query) if word not in ('热点', '新闻', '最新', '近期')]
-        return any(word.casefold() in title.casefold() for word in terms) or ('汽车' in query and '/auto/' in url)
+    def query_terms(query):
+        text=unicodedata.normalize('NFKC',query).casefold()
+        text=re.sub(r'[-_\u2010-\u2015]',' ',text)
+        text=re.sub(r'帮我|给我|关于|相关|报道|新闻|热点|最新|近期|搜索|搜寻|检索|查找|寻找|总结|分析|选题|然后|一下|几个|一些|请|的',' ',text)
+        tokens=re.findall(r'[a-z0-9]+(?:[.-][a-z0-9]+)*|[\u4e00-\u9fff]+',text)
+        stop={'news','latest','recent','reports','report','related','search','the','and','or'}
+        return list(dict.fromkeys(word for word in tokens if word not in stop))[:12]
+
+    @staticmethod
+    def relevant(query, title, url=''):
+        # Require every requested entity term. A category URL or one broad brand
+        # match must never turn unrelated stories into results for a named product.
+        terms=NewsCrawler.query_terms(query)
+        text=unicodedata.normalize('NFKC',title).casefold()
+        text=re.sub(r'[-_\u2010-\u2015]',' ',text)
+        def matches(term):
+            if re.fullmatch(r'[a-z0-9]+(?:[.-][a-z0-9]+)*',term):
+                return bool(re.search(r'(?<![a-z0-9])'+re.escape(term)+r'(?![a-z0-9])',text))
+            return term in text
+        return bool(terms) and all(matches(term) for term in terms)
 
     async def discover(self, client, query, days):
-        category = self.category(query)
-        candidates, notices = [], []
+        category=self.category(query)
+        candidates,notices=[],[]
+        def append(title,url,date=None,excerpt='',publisher='',kind='NEWS'):
+            if title and url and self.relevant(query,title):
+                candidates.append({'title':title[:300],'url':url,'publishedAt':date,
+                                   'excerpt':excerpt[:2500],'publisher':publisher,'discoveryKind':kind})
         async def broadcast_index(page):
             try:
-                raw, _ = await self.fetch(client, f'https://news.cctv.com/2019/07/gaiban/cmsdatainterface/page/news_{page}.jsonp', robots=False)
-                payload = raw.decode('utf-8', errors='replace').strip()
-                match = re.fullmatch(r'[\w.]+\((.*)\)\s*;?', payload, re.S)
-                data = json.loads(match.group(1) if match else payload)
-                for item in data.get('data', {}).get('list', [])[:100]:
-                    title, url = str(item.get('title', '')), str(item.get('url', ''))
-                    context = title + ' ' + str(item.get('brief', '')) + ' ' + str(item.get('keywords', ''))
-                    if title and url and self.relevant(query, context, url):
-                        candidates.append({'title': title[:300], 'url': url, 'publishedAt': parse_date(item.get('focus_date')),
-                                           'excerpt': str(item.get('brief', ''))[:2500], 'publisher': '央视网'})
-            except (ServiceError, httpx.HTTPError, ValueError, TypeError, AttributeError):
+                raw,_=await self.fetch(client,f'https://news.cctv.com/2019/07/gaiban/cmsdatainterface/page/news_{page}.jsonp',robots=False)
+                payload=raw.decode('utf-8',errors='replace').strip()
+                match=re.fullmatch(r'[\w.]+\((.*)\)\s*;?',payload,re.S)
+                data=json.loads(match.group(1) if match else payload)
+                for item in data.get('data',{}).get('list',[])[:100]:
+                    append(str(item.get('title','')),str(item.get('url','')),parse_date(item.get('focus_date')),
+                           str(item.get('brief','')),'央视网')
+            except (ServiceError,httpx.HTTPError,ValueError,TypeError,AttributeError):
                 notices.append('部分媒体新闻目录暂时无法读取')
-        await asyncio.gather(broadcast_index(1), broadcast_index(2))
-        async def feed(url):
+        async def feed(url,publisher,publication=True):
             try:
-                raw, _ = await self.fetch(client, url, robots=False)
-                if b'<!DOCTYPE' in raw.upper() or b'<!ENTITY' in raw.upper():
-                    return
-                root = ET.fromstring(raw)
-                for item in root.findall('./channel/item')[:50]:
-                    title, link = item.findtext('title') or '', item.findtext('link') or ''
-                    if title and link and self.relevant(query, title, link):
-                        candidates.append({'title': title[:300], 'url': link, 'publishedAt': parse_date(item.findtext('pubDate')),
-                                           'excerpt': re.sub('<[^>]+>', '', unescape(item.findtext('description') or ''))[:2500], 'publisher': '中国新闻网'})
-            except (ServiceError, httpx.HTTPError, ET.ParseError):
-                notices.append('部分公开新闻订阅暂时无法读取')
-        await feed(f'https://www.chinanews.com.cn/rss/{category}.xml')
-        try:
-            request = httpx.URL('https://cn.bing.com/search', params={'q': query + ' 新闻', 'format': 'rss', 'mkt': 'zh-CN'})
-            raw, _ = await self.fetch(client, str(request), robots=False)
-            if b'<!DOCTYPE' not in raw.upper() and b'<!ENTITY' not in raw.upper():
-                for item in ET.fromstring(raw).findall('./channel/item')[:15]:
-                    title, link = item.findtext('title') or '', item.findtext('link') or ''
-                    if self.relevant(query, title, link):
-                        candidates.append({'title': title[:300], 'url': link, 'publishedAt': None,
-                                           'excerpt': re.sub('<[^>]+>', '', unescape(item.findtext('description') or ''))[:2500],
-                                           'publisher': urlsplit(link).hostname or ''})
-        except (ServiceError, httpx.HTTPError, ET.ParseError):
-            notices.append('网页新闻检索暂时不可用')
-        # The public category page covers publishers whose RSS feed updates less frequently.
-        try:
-            raw, base = await self.fetch(client, f'https://www.chinanews.com.cn/{category}/')
-            html = ArticleHTML(); html.feed(raw.decode('utf-8', errors='replace'))
-            for link, title in html.links:
-                url = urljoin(base, link)
-                if re.search(r'/20\d{2}/\d{2}-\d{2}/\d+\.shtml', url) and self.relevant(query, title, url):
-                    candidates.append({'title': title[:300], 'url': url, 'publishedAt': None, 'excerpt': '', 'publisher': '中国新闻网'})
-        except (ServiceError, httpx.HTTPError):
-            notices.append('新闻栏目页面暂时无法读取')
-        # Optional broad discovery; an unavailable public index never becomes invented results.
-        if len(candidates) < 3:
+                raw,_=await self.fetch(client,url,robots=False)
+                if b'<!DOCTYPE' in raw.upper() or b'<!ENTITY' in raw.upper(): return
+                root=ET.fromstring(raw)
+                for item in root.findall('./channel/item')[:100]:
+                    title,link=item.findtext('title') or '',item.findtext('link') or ''
+                    # Generic web-search RSS dates can be crawl/index dates.
+                    append(title,link,parse_date(item.findtext('pubDate')) if publication else None,
+                           re.sub('<[^>]+>','',unescape(item.findtext('description') or '')),
+                           publisher or urlsplit(link).hostname or '',kind='NEWS' if publication else 'WEB')
+                ns={'a':'http://www.w3.org/2005/Atom'}
+                for item in root.findall('a:entry',ns)[:100]:
+                    link=item.find('a:link',ns)
+                    append(item.findtext('a:title',default='',namespaces=ns),link.get('href','') if link is not None else '',
+                           parse_date(item.findtext('a:published',namespaces=ns)),
+                           re.sub('<[^>]+>','',unescape(item.findtext('a:content',default='',namespaces=ns))),publisher)
+            except (ServiceError,httpx.HTTPError,ET.ParseError,ValueError):
+                notices.append('部分公开新闻检索暂时无法读取')
+        async def category_page():
             try:
-                request = httpx.URL('https://api.gdeltproject.org/api/v2/doc/doc', params={'query': query, 'mode': 'artlist', 'format': 'json', 'maxrecords': '12', 'timespan': f'{days}d'})
-                raw, _ = await self.fetch(client, str(request), robots=False)
-                for item in json.loads(raw).get('articles', [])[:12]:
-                    candidates.append({'title': str(item.get('title', ''))[:300], 'url': item.get('url', ''),
-                                       'publishedAt': None, 'excerpt': '', 'publisher': item.get('domain', '')})
-            except (ServiceError, httpx.HTTPError, ValueError, TypeError):
+                raw,base=await self.fetch(client,f'https://www.chinanews.com.cn/{category}/')
+                html=ArticleHTML();html.feed(raw.decode('utf-8',errors='replace'))
+                for link,title in html.links:
+                    url=urljoin(base,link)
+                    if re.search(r'/20\d{2}/\d{2}-\d{2}/\d+\.shtml',url): append(title,url,publisher='中国新闻网')
+            except (ServiceError,httpx.HTTPError): notices.append('新闻栏目页面暂时无法读取')
+        async def broad_index():
+            try:
+                request=httpx.URL('https://api.gdeltproject.org/api/v2/doc/doc',params={'query':query,'mode':'artlist','format':'json','maxrecords':'20','timespan':f'{days}d'})
+                raw,_=await self.fetch(client,str(request),robots=False)
+                for item in json.loads(raw).get('articles',[])[:20]:
+                    append(str(item.get('title','')),str(item.get('url','')),publisher=str(item.get('domain','')))
+            except (ServiceError,httpx.HTTPError,ValueError,TypeError,AttributeError):
                 notices.append('公开新闻索引暂时不可用或限流')
-        return candidates, list(dict.fromkeys(notices))
+        async def news_index():
+            try:
+                async with asyncio.timeout(28):
+                    request=httpx.URL('https://news.google.com/rss/search',params={'q':(' '.join(self.query_terms(query)) or query)+f' when:{days}d','hl':'zh-CN','gl':'CN','ceid':'CN:zh-Hans'})
+                    raw,_=await self.fetch(client,str(request),robots=False)
+                    if b'<!DOCTYPE' in raw.upper() or b'<!ENTITY' in raw.upper():return
+                    rows=[]
+                    cutoff=datetime.now(UTC)-timedelta(days=days)
+                    for item in ET.fromstring(raw).findall('./channel/item')[:100]:
+                        title,link=item.findtext('title') or '',item.findtext('link') or ''
+                        published=parse_date(item.findtext('pubDate'))
+                        source=item.find('source')
+                        host=urlsplit(source.get('url','') if source is not None else '').hostname or ''
+                        if not self.relevant(query,title) or not any(host==root or host.endswith('.'+root) for root in self.hosts):continue
+                        if published and datetime.fromisoformat(published)<cutoff:continue
+                        rows.append((title,link,published,source.text or host))
+                    rows.sort(key=lambda row:row[2] or '',reverse=True)
+                    semaphore=asyncio.Semaphore(3)
+                    async def resolve(row):
+                        async with semaphore:
+                            try:
+                                url=await self.resolve_news_link(client,row[1])
+                                append(row[0],url,row[2],publisher=row[3])
+                            except (ServiceError,httpx.HTTPError,ValueError):
+                                notices.append('部分新闻原文链接暂时无法解析')
+                    await asyncio.gather(*(resolve(row) for row in rows[:8]))
+            except (TimeoutError,ServiceError,httpx.HTTPError,ET.ParseError,ValueError):
+                notices.append('新闻搜索索引暂时不可用或超时')
+        terms=self.query_terms(query)
+        search=' '.join(terms) or query
+        latin=[term for term in terms if re.fullmatch(r'[a-z0-9.-]+',term)]
+        exact='"'+' '.join(latin)+'"' if len(latin)>1 else search
+        tasks=[broadcast_index(1),broadcast_index(2),
+               feed(f'https://www.chinanews.com.cn/rss/{category}.xml','中国新闻网'),
+               feed(str(httpx.URL('https://cn.bing.com/search',params={'q':search,'format':'rss','mkt':'zh-CN'})),'',False),
+               feed(str(httpx.URL('https://www.bing.com/search',params={'q':exact,'format':'rss','mkt':'zh-CN'})),'',False),
+               broad_index(),category_page(),news_index()]
+        if category=='it':
+            tasks.extend([feed('https://www.ithome.com/rss/','IT之家'),feed('https://www.apple.com.cn/newsroom/rss-feed.rss','Apple')])
+        await asyncio.gather(*tasks)
+        return candidates,list(dict.fromkeys(notices))
 
     async def article(self, client, item):
         value = dict(item)
@@ -353,6 +439,9 @@ class NewsCrawler:
             if len(body) < 80:
                 body = html.embedded_body()[:7500]
             value['url'] = final_url
+            value['articleEvidence']=html.meta.get('og:type','').casefold()=='article' or any(re.search(r'NewsArticle|ReportageNewsArticle',block) for block in html.ld_blocks)
+            if html.headline:
+                value['title']=html.headline[:300]
             if html.published():
                 value['publishedAt'] = html.published()
             if len(body) >= 80:
@@ -374,12 +463,21 @@ class NewsCrawler:
             unique = {}
             cutoff = datetime.now(UTC) - timedelta(days=request.days)
             for item in candidates:
+                if not self.relevant(request.query,item.get('title','')):
+                    continue
                 try:
                     url = await self.validate_url(item['url'])
                 except ServiceError:
                     continue
-                path_parts = [part for part in urlsplit(url).path.split('/') if part]
-                if len(path_parts) < 2 and not re.search(r'\.(?:s?html?|aspx?)$', urlsplit(url).path, re.I):
+                parsed_url=urlsplit(url)
+                if parsed_url.hostname in ('www.apple.com','apple.com','www.apple.com.cn','apple.com.cn','support.apple.com') and '/newsroom/' not in parsed_url.path:
+                    continue
+                if parsed_url.hostname in ('quote.eastmoney.com','quote.sina.com.cn'):
+                    continue
+                if re.search(r'/(?:shop|search|topics|tags?|category|cars|brand|brands|models|price|prices|quote)(?:/|$)',parsed_url.path):
+                    continue
+                path_parts = [part for part in parsed_url.path.split('/') if part]
+                if len(path_parts) < 2 and not re.search(r'(?:\.(?:s?html?|aspx?)$|/(?:newsDetail_forward_)?\d{5,}/?$)', parsed_url.path, re.I):
                     continue
                 if item.get('publishedAt') and datetime.fromisoformat(item['publishedAt']) < cutoff:
                     continue
@@ -393,16 +491,33 @@ class NewsCrawler:
                         except ValueError:
                             continue
                 normalized_title = re.sub(r'\W', '', item['title']).casefold()
-                if url not in unique and normalized_title not in {re.sub(r'\W', '', v['title']).casefold() for v in unique.values()}:
+                if url in unique:
+                    if item.get('discoveryKind')=='NEWS' and unique[url].get('discoveryKind')!='NEWS':
+                        unique[url]=dict(item,url=url)
+                elif normalized_title not in {re.sub(r'\W', '', v['title']).casefold() for v in unique.values()}:
                     unique[url] = dict(item, url=url)
             semaphore = asyncio.Semaphore(3)
             async def read(item):
                 async with semaphore:
                     return await self.article(client, item)
-            articles = await asyncio.gather(*(read(item) for item in list(unique.values())[:request.limit * 2]))
-        articles = [item for item in articles if not item.get('publishedAt') or cutoff <= datetime.fromisoformat(item['publishedAt']) <= datetime.now(UTC) + timedelta(days=1)]
-        articles.sort(key=lambda item: item.get('publishedAt') or '', reverse=True)
+            def candidate_rank(item):
+                primary=urlsplit(item['url']).hostname in ('apple.com','www.apple.com','apple.com.cn','www.apple.com.cn')
+                return (item.get('discoveryKind')=='NEWS',primary,bool(item.get('publishedAt')),item.get('publishedAt') or '')
+            ranked=sorted(unique.values(),key=candidate_rank,reverse=True)
+            articles = await asyncio.gather(*(read(item) for item in ranked[:request.limit * 2]))
+        articles = [item for item in articles if self.relevant(request.query,item.get('title',''))
+                    and (item.get('discoveryKind')!='WEB' or item.get('publishedAt') or item.get('articleEvidence'))
+                    and (not item.get('publishedAt') or cutoff <= datetime.fromisoformat(item['publishedAt']) <= datetime.now(UTC) + timedelta(days=1))]
+        def article_rank(item):
+            host=urlsplit(item['url']).hostname or ''
+            primary=host in ('apple.com','www.apple.com','apple.com.cn','www.apple.com.cn')
+            social=host in ('k.sina.com.cn','weibo.com','www.weibo.com')
+            return (not social,primary,item.get('publishedAt') or '')
+        articles.sort(key=article_rank,reverse=True)
         articles = articles[:request.limit]
+        search_status='FOUND' if articles else 'UNAVAILABLE' if notices else 'NO_MATCH'
+        if not articles:
+            notices.append('本次未获取到相关报道，不代表该产品、事件或相关新闻不存在')
         sources = []
         for item in articles:
             identifier = 'web-' + hashlib.sha256(item['url'].encode()).hexdigest()[:24]
@@ -412,8 +527,8 @@ class NewsCrawler:
                     f'证据范围：{"网页正文" if item["contentStatus"] == "BODY" else "标题或摘要"}\n{item["content"]}')
             source = Source(documentId=identifier, documentName=item['title'], chunkId=identifier, text=text[:10000], score=0.0, sourceUrl=item['url'])
             sources.append(source.model_dump())
-        result = {'query': request.query, 'days': request.days, 'matchCount': len(articles), 'sources': sources,
-                  'articles': [{k: v for k, v in item.items() if k not in ('content', 'excerpt')} for item in articles],
+        result = {'query': request.query, 'days': request.days, 'searchStatus':search_status,'matchCount': len(articles), 'sources': sources,
+                  'articles': [{k: v for k, v in item.items() if k not in ('content', 'excerpt', 'articleEvidence', 'discoveryKind')} for item in articles],
                   'notices': notices, 'factVerified': False, 'searchedAt': datetime.now(UTC).isoformat()}
         self.cache[key] = (time.monotonic(), result)
         if len(self.cache) > 100:

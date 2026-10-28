@@ -79,6 +79,30 @@ macos_install_environment
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertLess(result.stdout.index('INSTALL_BREW'),result.stdout.index('INSTALL_REDIS'))
 
+    def test_installer_reading_stdin_cannot_consume_remaining_dependency_queue(self):
+        result=self.shell('''
+uname(){ echo Darwin; }; id(){ echo 501; }
+fixture_dir=$(mktemp -d)
+trap 'rm -rf "$fixture_dir"' EXIT
+macos_find_brew(){ echo fakebrew; }; macos_activate_environment(){ :; }
+macos_missing_environment(){
+ for item in python@3.12 openjdk@21 node@24 mysql@8.4 redis maven; do
+  [ -f "$fixture_dir/$item" ] || echo "$item"
+ done
+ return 0
+}
+fakebrew(){
+ echo "INSTALL $2"
+ cat >/dev/null
+ touch "$fixture_dir/$2"
+}
+macos_install_environment
+''')
+        self.assertEqual(result.returncode,0,result.stderr)
+        for formula in ('python@3.12','openjdk@21','node@24','mysql@8.4','redis','maven'):
+            self.assertEqual(result.stdout.count('INSTALL '+formula+'\n'),1)
+        self.assertIn('运行环境安装完成',result.stdout)
+
     def test_failed_install_does_not_report_ready(self):
         result=self.shell('''
 uname(){ echo Darwin; }; id(){ echo 501; }
