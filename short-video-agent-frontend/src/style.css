@@ -44,6 +44,11 @@
 * {
   box-sizing: border-box;
 }
+/* Keep wheel/trackpad gestures inside the page at scroll boundaries. */
+html,
+body {
+  overscroll-behavior: none;
+}
 body {
   margin: 0;
   font-size: 16px;
@@ -7047,3 +7052,15 @@ small {
 .settings-account-panel,.settings-security-panel { width:100%;max-width:920px;box-sizing:border-box; }
 .settings-security-panel .settings-password-pair { display:grid;grid-template-columns:1fr 1fr;gap:20px; }
 @media(max-width:700px){.settings-security-panel .settings-password-pair{grid-template-columns:1fr;gap:0;}}
+
+/* Nested panels must not pass boundary scrolling to the document. */
+.studio-page,
+.studio-history-list,
+.conversation-messages,
+.execution-panel,
+.studio-menu-panel,
+.table-scroll,
+.el-overlay-dialog,
+.el-scrollbar__wrap {
+  overscroll-behavior: none;
+}
