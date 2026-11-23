@@ -22,6 +22,8 @@ import type {
   ArtifactVersion,
 } from "../lib/conversation-types";
 import ProductionCanvas from "../components/ProductionCanvas.vue";
+import ProductionTimeline from "../components/ProductionTimeline.vue";
+import SlidingSegment from "../components/SlidingSegment.vue";
 import ConversationTurn from "../components/ConversationTurn.vue";
 import NewsSourceCard from "../components/NewsSourceCard.vue";
 import LoadError from "../components/LoadError.vue";
@@ -32,12 +34,27 @@ const route = useRoute(),
 const { conversation, running, sending, cancelling, delta, liveEvents } = state;
 const draft = ref<ProductionPackage | null>(null),
   baseline = ref(""),
+  draftVersion = ref(0),
+  timelineEditing = ref(false),
+  timelineAgentOpen = ref(false),
   saving = ref(false),
   composer = ref(""),
   scope = ref("整篇"),
   versionsOpen = ref(false);
 const artifact = computed(() => conversation.value?.artifact),
-  editing = computed(() => route.query.edit === "1");
+  editing = computed(() => route.query.edit === "1" || timelineEditing.value),
+  workView = computed(() => route.query.view === "document" ? "document" : "timeline"),
+  agentVisible = computed(() => editing.value && (workView.value === "document" || timelineAgentOpen.value));
+const workViews = [{ value: "document", label: "文稿" }, { value: "timeline", label: "时间线" }];
+
+function changeWorkView(value: string) {
+  void router.replace({ query: { ...route.query, view: value === "document" ? "document" : undefined } });
+}
+function updateTimeline(value: ProductionPackage) {
+  if (running.value || sending.value || saving.value) return;
+  draft.value = value;
+  timelineEditing.value = true;
+}
 const choiceDraft=useChoiceDraft(composer),composerElement=ref<HTMLTextAreaElement>();
 function fillComposer(text:string){choiceDraft.clear();composer.value=text;void nextTick(()=>composerElement.value?.focus());}
 function choose(messageId:string,selection:Omit<Selection,'messageId'>){const message=conversation.value?.messages.find(m=>m.id===messageId);if(message&&!running.value&&choiceDraft.stage(message,selection))void nextTick(()=>composerElement.value?.focus());}
@@ -51,6 +68,7 @@ function resetDraft() {
   if (artifact.value) {
     draft.value = JSON.parse(JSON.stringify(artifact.value.content));
     baseline.value = JSON.stringify(draft.value);
+    draftVersion.value = artifact.value.versionNumber;
   }
 }
 watch(
@@ -64,13 +82,15 @@ watch(
   async (id) => {
     draft.value = null;
     baseline.value = "";
+    timelineEditing.value = false;
+    timelineAgentOpen.value = false;
     await state.load(id);
     resetDraft();
   },
   { immediate: true },
 );
 async function saveManual() {
-  if (!artifact.value || !draft.value || !conversation.value) return false;
+  if (!artifact.value || !draft.value || !conversation.value || running.value || saving.value) return false;
   if (!dirty.value) return true;
   saving.value = true;
   try {
@@ -78,7 +98,7 @@ async function saveManual() {
       await conversationApi.save(
         conversation.value.id,
         draft.value,
-        artifact.value.versionNumber,
+        draftVersion.value,
       ),
     );
     resetDraft();
@@ -106,6 +126,8 @@ async function leaveEdit(discard = false) {
     } else if (!(await saveManual())) return;
   }
   await router.replace({ query: { ...route.query, edit: undefined } });
+  timelineEditing.value = false;
+  timelineAgentOpen.value = false;
 }
 onBeforeRouteLeave(async () => {
   if (!dirty.value) return true;
@@ -183,7 +205,7 @@ async function restore(version: ArtifactVersion) {
 <template>
   <div
     class="work-detail-page"
-    :class="{ 'is-editing': editing }"
+    :class="{ 'is-editing': editing, 'has-agent': agentVisible, 'is-timeline': workView === 'timeline' }"
     v-loading="state.loading.value"
   >
     <header class="work-detail-toolbar">
@@ -195,6 +217,9 @@ async function restore(version: ArtifactVersion) {
           artifact.versionNumber
         }}</span
       >
+      <strong v-if="artifact && workView === 'timeline'" class="work-timeline-title" :title="draft?.title">{{ draft?.title }}</strong>
+      <SlidingSegment v-if="artifact" class="work-view-switch" label="作品视图" :model-value="workView"
+        :options="workViews" @update:model-value="changeWorkView" />
       <div class="work-detail-actions">
         <template v-if="!editing"
           ><el-button
@@ -215,6 +240,8 @@ async function restore(version: ArtifactVersion) {
             >修改</el-button
           ></template
         ><template v-else
+          ><el-button v-if="workView === 'timeline'" :icon="PhChatTeardropText"
+            :aria-pressed="agentVisible" @click="timelineAgentOpen = !timelineAgentOpen">AI 修改</el-button
           ><el-button :disabled="running || saving" @click="leaveEdit(true)"
             >取消</el-button
           ><el-button
@@ -238,7 +265,9 @@ async function restore(version: ArtifactVersion) {
     />
     <div v-else-if="artifact && draft" class="work-detail-layout">
       <main class="work-detail-document">
-        <ProductionCanvas
+        <ProductionTimeline v-if="workView === 'timeline'" :key="conversation!.id" :model-value="draft"
+          :editable="!running && !sending && !saving" @update:model-value="updateTimeline" />
+        <ProductionCanvas v-else
           v-model="draft"
           :editable="editing && !running && !saving"
           @revise="revise"
@@ -252,7 +281,7 @@ async function restore(version: ArtifactVersion) {
           />
         </section>
       </main>
-      <aside class="work-agent-panel" :inert="editing ? undefined : true">
+      <aside class="work-agent-panel" :inert="agentVisible ? undefined : true">
         <div class="work-agent-inner">
           <header>
             <h2>与知映一起修改</h2>

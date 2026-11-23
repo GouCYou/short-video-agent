@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from "vue";
 const props = withDefaults(
-  defineProps<{ label: string; editable?: boolean; multiline?: boolean }>(),
-  { editable: false, multiline: true },
+  defineProps<{
+    label: string;
+    editable?: boolean;
+    multiline?: boolean;
+    maxlength?: number;
+  }>(),
+  { editable: false, multiline: true, maxlength: 10000 },
 );
 const value = defineModel<string>({ required: true });
 const active = ref(false),
@@ -52,7 +57,7 @@ function keydown(event: KeyboardEvent) {
       v-model="value"
       :aria-label="label"
       rows="1"
-      maxlength="10000"
+      :maxlength="maxlength"
       @input="resize"
       @blur="active = false"
       @keydown="keydown"

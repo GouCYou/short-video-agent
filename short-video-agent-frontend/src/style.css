@@ -6468,7 +6468,7 @@ small {
   min-height: 0;
   transition: grid-template-columns var(--motion-panel) var(--motion-ease);
 }
-.work-detail-page.is-editing .work-detail-layout {
+.work-detail-page.has-agent .work-detail-layout {
   grid-template-columns: minmax(0, 1fr) 360px;
 }
 .work-detail-document {
@@ -6694,7 +6694,7 @@ small {
   opacity: 0;
   transition: opacity 220ms ease;
 }
-.work-detail-page.is-editing .work-agent-panel {
+.work-detail-page.has-agent .work-agent-panel {
   opacity: 1;
 }
 .work-agent-inner {
@@ -6825,7 +6825,7 @@ small {
   .work-detail-document {
     padding: 22px 20px 40px;
   }
-  .work-detail-page.is-editing .work-detail-layout {
+  .work-detail-page.has-agent .work-detail-layout {
     grid-template-columns: minmax(0, 1fr) 320px;
   }
   .work-agent-inner {
@@ -6881,16 +6881,16 @@ small {
   .production-canvas > .sliding-segment button {
     min-width: 58px;
   }
-  .work-detail-page.is-editing .work-detail-layout {
+  .work-detail-page.has-agent .work-detail-layout {
     display: flex;
     flex-direction: column;
     overflow: auto;
   }
-  .work-detail-page.is-editing .work-detail-document {
+  .work-detail-page.has-agent .work-detail-document {
     overflow: visible;
     flex: none;
   }
-  .work-detail-page.is-editing .work-agent-panel {
+  .work-detail-page.has-agent .work-agent-panel {
     flex: none;
     min-height: 450px;
     height: 65vh;
@@ -7063,4 +7063,34 @@ small {
 .el-overlay-dialog,
 .el-scrollbar__wrap {
   overscroll-behavior: none;
+}
+
+.work-detail-page.is-timeline .work-detail-document {
+  padding: 16px 20px 32px;
+}
+.work-detail-page.is-timeline .work-detail-toolbar {
+  min-height: 66px;
+  padding: 9px 20px;
+  gap: 12px;
+}
+.work-timeline-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 16px;
+}
+.work-view-switch { flex: none; }
+.work-view-switch button { min-width: 56px; }
+.work-detail-toolbar .text-icon-button,
+.work-detail-version { white-space: nowrap; }
+@media (max-width: 900px) {
+  .work-detail-page.is-timeline .work-detail-toolbar { flex-wrap: wrap; }
+  .work-timeline-title { flex-basis: 20%; }
+}
+@media (max-width: 650px) {
+  .work-detail-page.is-timeline .work-detail-document { padding: 12px 10px 24px; }
+  .work-detail-page.is-timeline .work-detail-toolbar { padding: 9px 10px; }
+  .work-timeline-title { order: 1; flex-basis: 100%; }
 }

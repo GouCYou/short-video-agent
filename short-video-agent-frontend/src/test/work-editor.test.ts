@@ -123,7 +123,7 @@ it("requires the modify action and saves an inline change as a new artifact vers
       { path: "/tasks", component: { template: "<div/>" } },
     ],
   });
-  await router.push("/works/chat-one");
+  await router.push("/works/chat-one?view=document");
   const wrapper = mount(WorkView, {
     global: { plugins: [router, createPinia(), ElementPlus] },
   });
@@ -147,6 +147,67 @@ it("requires the modify action and saves an inline change as a new artifact vers
   expect(conversationApi.save).toHaveBeenCalledWith(
     "chat-one",
     expect.objectContaining({ opening: "改好的开场" }),
+    1,
+  );
+  expect(wrapper.get(".work-detail-version").text()).toContain("V2");
+  wrapper.unmount();
+});
+
+it("edits timeline subtitles directly, keeps the draft across views and saves the selected shot", async () => {
+  const value = fixture();
+  const first = value.artifact!.content.segments[0]!;
+  const second = {
+    ...first,
+    id: "2",
+    duration: 15,
+    visual: "街角远景",
+    subtitle: "第二镜字幕",
+  };
+  value.artifact!.content.segments.push(second);
+  vi.mocked(conversationApi.get).mockResolvedValue(value);
+  vi.mocked(conversationApi.events).mockResolvedValue([]);
+  vi.mocked(conversationApi.save).mockImplementation(async (_id, content) => ({
+    ...value,
+    artifact: { ...value.artifact!, content, versionNumber: 2 },
+  }));
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: "/works/:id", component: WorkView }],
+  });
+  await router.push("/works/chat-one");
+  const wrapper = mount(WorkView, {
+    global: { plugins: [router, createPinia(), ElementPlus] },
+  });
+  await flushPromises();
+
+  await wrapper.get('[aria-label="时间线播放头"]').setValue(35);
+  expect(wrapper.get(".timeline-portrait").text()).toContain("第二镜字幕");
+  await wrapper.get('[aria-label="修改字幕"]').trigger("click");
+  await wrapper.get('textarea[aria-label="字幕"]').setValue("更新后的字幕");
+  await wrapper.get('textarea[aria-label="字幕"]').trigger("blur");
+  expect(wrapper.get(".timeline-portrait").text()).toContain("更新后的字幕");
+  expect(wrapper.get('[aria-label="字幕 · 镜头 02"]').text()).toBe(
+    "更新后的字幕",
+  );
+  await wrapper.get('[aria-label="镜头时长（秒）"]').setValue(20);
+  expect(wrapper.get(".timeline-transport output").text()).toContain("00:50");
+
+  const views = wrapper.get('[aria-label="作品视图"]');
+  await views.get("button:first-of-type").trigger("click");
+  await flushPromises();
+  expect(wrapper.find(".production-canvas").exists()).toBe(true);
+  await views.get("button:last-of-type").trigger("click");
+  await flushPromises();
+  const save = wrapper
+    .findAll(".work-detail-actions button")
+    .find((button) => button.text() === "保存")!;
+  await save.trigger("click");
+  await flushPromises();
+  expect(conversationApi.save).toHaveBeenLastCalledWith(
+    "chat-one",
+    expect.objectContaining({
+      segments: [first, { ...second, duration: 20, subtitle: "更新后的字幕" }],
+    }),
     1,
   );
   expect(wrapper.get(".work-detail-version").text()).toContain("V2");
